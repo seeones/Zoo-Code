@@ -90,9 +90,8 @@ import { McpHub } from "../../services/mcp/McpHub"
 import { McpServerManager } from "../../services/mcp/McpServerManager"
 import { MarketplaceManager } from "../../services/marketplace"
 import { ShadowCheckpointService } from "../../services/checkpoints/ShadowCheckpointService"
-import type { CodeIndexManager } from "../../services/code-index/manager"
 import { CodeIndexManagerRegistry } from "../../services/code-index/code-index-manager-registry"
-import type { IndexProgressUpdate } from "../../services/code-index/interfaces/manager"
+import type { CodeIndexWorkspaceScope } from "../../services/code-index/code-index-workspace-scope"
 import { MdmService } from "../../services/mdm/MdmService"
 import { SkillsManager } from "../../services/skills/SkillsManager"
 
@@ -186,6 +185,25 @@ type GetStateOptions = {
 	includeTaskHistory?: boolean
 }
 
+/**
+ * Internal options for {@link ClineProvider.upsertProviderProfile}.
+ */
+type UpsertProviderProfileOptions = {
+	/**
+	 * Internal-only bypass of the organization model allow-list, used exclusively
+	 * for Zoo Gateway credential synchronization (token refresh) and sign-out
+	 * writes. These are auth writes, not model selections: a restrictive
+	 * allow-list may omit `zoo-gateway` entirely, or list the provider without the
+	 * active `zooGatewayModelId`, and must not reject the credential write and
+	 * leave stale credentials behind in the active profile.
+	 *
+	 * This flag must never be set from a webview-originated code path: the webview
+	 * is not a trusted boundary, so every user-driven profile write keeps the
+	 * allow-list enforcement.
+	 */
+	bypassAllowList?: boolean
+}
+
 export class ClineProvider
 	extends EventEmitter<TaskProviderEvents>
 	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike
@@ -212,8 +230,6 @@ export class ClineProvider
 	private taskScheduler = new TaskScheduler()
 	private static readonly delegationTransitionLocks = new Map<string, Promise<void>>()
 	private cancelledDelegationChildIds = new Set<string>()
-	private codeIndexStatusSubscription?: vscode.Disposable
-	private codeIndexManager?: CodeIndexManager
 	private _workspaceTracker?: WorkspaceTracker // workSpaceTracker read-only for access outside this class
 	protected mcpHub?: McpHub // Change from private to protected
 	protected skillsManager?: SkillsManager
@@ -406,35 +422,7 @@ export class ClineProvider
 				}
 				this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
 			}
-			const onTaskAborted = async () => {
-				this.emit(RooCodeEventName.TaskAborted, instance.taskId)
-
-				try {
-					// Only rehydrate on genuine streaming failures.
-					// User-initiated cancels are handled by cancelTask().
-					if (instance.abortReason === "streaming_failed") {
-						// Defensive safeguard: if another path already replaced this instance, skip
-						const current = this.getCurrentTask()
-						if (current && current.instanceId !== instance.instanceId) {
-							this.log(
-								`[onTaskAborted] Skipping rehydrate: current instance ${current.instanceId} != aborted ${instance.instanceId}`,
-							)
-							return
-						}
-
-						const { historyItem } = await this.getTaskWithId(instance.taskId)
-						const rootTask = instance.rootTask
-						const parentTask = instance.parentTask
-						await this.createTaskWithHistoryItem({ ...historyItem, rootTask, parentTask })
-					}
-				} catch (error) {
-					this.log(
-						`[onTaskAborted] Failed to rehydrate after streaming failure: ${
-							error instanceof Error ? error.message : String(error)
-						}`,
-					)
-				}
-			}
+			const onTaskAborted = () => this.emit(RooCodeEventName.TaskAborted, instance.taskId)
 			const onTaskFocused = () => this.emit(RooCodeEventName.TaskFocused, instance.taskId)
 			const onTaskUnfocused = () => this.emit(RooCodeEventName.TaskUnfocused, instance.taskId)
 			const onTaskActive = (taskId: string) => this.emit(RooCodeEventName.TaskActive, taskId)
@@ -1073,17 +1061,6 @@ export class ClineProvider
 		// and executes code based on the message that is received.
 		this.setWebviewMessageListener(webviewView.webview)
 
-		// Initialize code index status subscription for the current workspace.
-		this.updateCodeIndexStatusSubscription()
-
-		// Listen for active editor changes to update code index status for the
-		// current workspace.
-		const activeEditorSubscription = vscode.window.onDidChangeActiveTextEditor(() => {
-			// Update subscription when workspace might have changed.
-			this.updateCodeIndexStatusSubscription()
-		})
-		this.webviewDisposables.push(activeEditorSubscription)
-
 		// Listen for when the panel becomes visible.
 		// https://github.com/microsoft/vscode-discussions/discussions/840
 		if ("onDidChangeViewState" in webviewView) {
@@ -1121,8 +1098,6 @@ export class ClineProvider
 				} else {
 					this.log("Clearing webview resources for sidebar view")
 					this.clearWebviewResources()
-					// Reset current workspace manager reference when view is disposed
-					this.codeIndexManager = undefined
 				}
 			},
 			null,
@@ -1534,7 +1509,7 @@ export class ClineProvider
 			console.error("[ClineProvider:Vite] Failed to read Vite port file:", err)
 		}
 
-		const localServerUrl = `localhost:${localPort}`
+		const localServerUrl = `127.0.0.1:${localPort}`
 
 		// Check if local dev server is running.
 		try {
@@ -1573,7 +1548,7 @@ export class ClineProvider
 
 		const reactRefresh = /*html*/ `
 			<script nonce="${nonce}" type="module">
-				import RefreshRuntime from "http://localhost:${localPort}/@react-refresh"
+				import RefreshRuntime from "http://127.0.0.1:${localPort}/@react-refresh"
 				RefreshRuntime.injectIntoGlobalHook(window)
 				window.$RefreshReg$ = () => {}
 				window.$RefreshSig$ = () => (type) => type
@@ -1879,7 +1854,52 @@ export class ClineProvider
 		name: string,
 		providerSettings: ProviderSettings,
 		activate: boolean = true,
+		options: UpsertProviderProfileOptions = {},
 	): Promise<string | undefined> {
+		// Enforce the organization model allow-list before persisting or
+		// activating a profile. The webview is not a trusted boundary, so the
+		// model selector's client-side gating cannot be the only check.
+		// Task creation validates too, but rejecting here prevents an
+		// unauthorized profile from being written or activated at all.
+		//
+		// `bypassAllowList` is reserved for internal Zoo Gateway credential
+		// writes (token refresh / sign-out), which are auth writes rather than
+		// model selections; see `UpsertProviderProfileOptions`.
+		if (!options.bypassAllowList) {
+			let organizationAllowList = ORGANIZATION_ALLOW_ALL
+
+			if (CloudService.hasInstance()) {
+				// The webview is not a trusted boundary, so a profile write must not
+				// fail open. Allow-all is only legitimate when no cloud instance exists
+				// (positively no organization policy). If a cloud instance exists but its
+				// policy cannot be read, reject the write rather than persisting a
+				// possibly disallowed model during a transient cloud/allow-list failure.
+				try {
+					organizationAllowList = await CloudService.instance.getAllowList()
+				} catch (error) {
+					this.log(
+						`[upsertProviderProfile] Blocked profile "${name}": organization allow-list unavailable: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					)
+					void vscode.window.showErrorMessage(t("common:errors.violated_organization_allowlist"))
+					return undefined
+				}
+			}
+
+			if (!ProfileValidator.isProfileAllowed(providerSettings, organizationAllowList)) {
+				this.log(
+					`[upsertProviderProfile] Blocked profile "${name}": model is not allowed by the organization allow-list`,
+				)
+				// Surface the rejection to the user here rather than in the webview
+				// handler: direct callers (OAuth callbacks, sign-out) reach this
+				// method without the handler and would otherwise fail silently. No
+				// webview context is required, so non-webview callers are safe.
+				void vscode.window.showErrorMessage(t("common:errors.violated_organization_allowlist"))
+				return undefined
+			}
+		}
+
 		try {
 			return await this.enqueueProviderProfileMutation(async (signal) => {
 				// TODO: Do we need to be calling `activateProfile`? It's not
@@ -1887,12 +1907,53 @@ export class ClineProvider
 				// we rely on the `ContextProxy`'s data store and in other cases
 				// we rely on the `ProviderSettingsManager`'s data store. It might
 				// be simpler to unify these two.
+				// Snapshot the pre-write state so a failure *after* `saveConfig`
+				// succeeds (during the activation writes below) can be rolled back
+				// instead of leaving the profile secret and the active/mode state
+				// divergent — the profile would carry the new model while the mode
+				// or current profile still pointed at the old one.
+				const priorCurrentApiConfigName = this.contextProxy.getValue("currentApiConfigName")
+				const priorProviderSettings = this.contextProxy.getProviderSettings()
+
+				// `getProfile` wraps both "not found" and transient read failures in the
+				// same error, so it cannot decide whether the profile pre-existed. Probe
+				// existence explicitly: a destructive rollback (`deleteConfig`) must only
+				// run when absence is confirmed, never on a swallowed read error that would
+				// otherwise delete an existing profile and its secrets.
+				let profileExisted: boolean | undefined
+				try {
+					profileExisted = await this.providerSettingsManager.hasConfig(name)
+				} catch {
+					// Existence is unknown; rollback will restore/no-op rather than delete.
+					profileExisted = undefined
+				}
+
+				let priorProfile: Awaited<ReturnType<ProviderSettingsManager["getProfile"]>> | undefined
+				if (profileExisted !== false) {
+					try {
+						priorProfile = await this.providerSettingsManager.getProfile({ name })
+					} catch (error) {
+						// The profile exists (or existence is unknown) but could not be read.
+						// When existence was confirmed, propagate so the write aborts *before*
+						// `saveConfig` rather than proceeding with an unknown prior state.
+						if (profileExisted === true) {
+							throw error
+						}
+					}
+				}
+
 				const id = await this.providerSettingsManager.saveConfig(name, providerSettings)
 
 				if (signal.aborted) return id
 
 				if (activate) {
 					const { mode } = await this.getState()
+					let priorModeConfigId: string | undefined
+					try {
+						priorModeConfigId = await this.providerSettingsManager.getModeConfigId(mode)
+					} catch {
+						// No prior mapping (or unavailable); nothing to restore for the mode.
+					}
 
 					// These promises do the following:
 					// 1. Adds or updates the list of provider profiles.
@@ -1904,19 +1965,55 @@ export class ClineProvider
 					// this.contextProxy.setValues({ ...providerSettings, listApiConfigMeta: ..., currentApiConfigName: ... })
 					// We should probably switch to that and verify that it works.
 					// I left the original implementation in just to be safe.
-					await Promise.all([
-						this.updateGlobalState("listApiConfigMeta", await this.providerSettingsManager.listConfig()),
-						this.updateGlobalState("currentApiConfigName", name),
-						this.providerSettingsManager.setModeConfig(mode, id),
-						this.contextProxy.setProviderSettings(providerSettings),
-					])
+					try {
+						await Promise.all([
+							this.updateGlobalState(
+								"listApiConfigMeta",
+								await this.providerSettingsManager.listConfig(),
+							),
+							this.updateGlobalState("currentApiConfigName", name),
+							this.providerSettingsManager.setModeConfig(mode, id),
+							this.contextProxy.setProviderSettings(providerSettings),
+						])
 
-					// Change the provider for the current task.
-					// TODO: We should rename `buildApiHandler` for clarity (e.g. `getProviderClient`).
-					this.updateTaskApiHandlerIfNeeded(providerSettings, { forceRebuild: true })
+						// Change the provider for the current task.
+						// TODO: We should rename `buildApiHandler` for clarity (e.g. `getProviderClient`).
+						this.updateTaskApiHandlerIfNeeded(providerSettings, { forceRebuild: true })
 
-					// Keep the current task's sticky provider profile in sync with the newly-activated profile.
-					await this.persistStickyProviderProfileToCurrentTask(name)
+						// Keep the current task's sticky provider profile in sync with the newly-activated profile.
+						await this.persistStickyProviderProfileToCurrentTask(name)
+					} catch (error) {
+						// Compensating rollback: restore the profile secret, the active
+						// profile name, the mode mapping and the in-memory provider
+						// settings to their pre-write values so a partial activation
+						// cannot report success while leaving inconsistent state.
+						try {
+							if (priorProfile) {
+								await this.providerSettingsManager.saveConfig(name, priorProfile)
+							} else if (profileExisted === false) {
+								// Absence was confirmed before the write; remove the new profile.
+								// A swallowed read error (unknown existence) must never reach here.
+								await this.providerSettingsManager.deleteConfig(name)
+							}
+							// A pre-existing mode mapping is restored; a newly created one
+							// has no delete API, so it is left as a best-effort remainder.
+							if (priorModeConfigId) {
+								await this.providerSettingsManager.setModeConfig(mode, priorModeConfigId)
+							}
+							await this.contextProxy.setValue("currentApiConfigName", priorCurrentApiConfigName)
+							await this.contextProxy.setValues({
+								listApiConfigMeta: await this.providerSettingsManager.listConfig(),
+							})
+							await this.contextProxy.setProviderSettings(priorProviderSettings)
+						} catch (rollbackError) {
+							this.log(
+								`[upsertProviderProfile] rollback failed for "${name}": ${
+									rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+								}`,
+							)
+						}
+						throw error
+					}
 				} else {
 					await this.updateGlobalState("listApiConfigMeta", await this.providerSettingsManager.listConfig())
 				}
@@ -2168,7 +2265,13 @@ export class ClineProvider
 				}
 				// Activate only if zoo-gateway was the active provider (shouldn't happen if
 				// no profiles exist, but defensive).
-				await this.upsertProviderProfile("Zoo Gateway", newConfiguration, isZooGatewayActive)
+				//
+				// `bypassAllowList`: internal auth credential write. `ProfileValidator`
+				// cannot map zoo-gateway to a model id, so a restrictive organization
+				// allow-list would reject this write and leave no credentials persisted.
+				await this.upsertProviderProfile("Zoo Gateway", newConfiguration, isZooGatewayActive, {
+					bypassAllowList: true,
+				})
 			} else {
 				// Update every existing zoo-gateway profile with the new token and the
 				// derived base URL so that environment-specific routing stays consistent.
@@ -2183,7 +2286,8 @@ export class ClineProvider
 					if (isActiveProfile) {
 						// Use upsertProviderProfile with activate: true so the in-memory handler
 						// picks up the new token immediately for the current task.
-						await this.upsertProviderProfile(entry.name, updated, true)
+						// `bypassAllowList`: internal auth credential write (see above).
+						await this.upsertProviderProfile(entry.name, updated, true, { bypassAllowList: true })
 					} else {
 						// Non-active profiles just need the token saved to disk.
 						await this.providerSettingsManager.saveConfig(entry.name, updated)
@@ -3263,59 +3367,8 @@ export class ClineProvider
 		return true
 	}
 
-	/**
-	 * Gets the CodeIndexManager for the current active workspace
-	 * @returns CodeIndexManager instance for the current workspace or the default one
-	 */
-	public getCurrentWorkspaceCodeIndexManager(): CodeIndexManager | undefined {
-		return CodeIndexManagerRegistry.getOrCreate(this.context)
-	}
-
-	/**
-	 * Updates the code index status subscription to listen to the current workspace manager
-	 */
-	private updateCodeIndexStatusSubscription(): void {
-		// Get the current workspace manager
-		const currentManager = this.getCurrentWorkspaceCodeIndexManager()
-
-		// If the manager hasn't changed, no need to update subscription
-		if (currentManager === this.codeIndexManager) {
-			return
-		}
-
-		// Dispose the old subscription if it exists
-		if (this.codeIndexStatusSubscription) {
-			this.codeIndexStatusSubscription.dispose()
-			this.codeIndexStatusSubscription = undefined
-		}
-
-		// Update the current workspace manager reference
-		this.codeIndexManager = currentManager
-
-		// Subscribe to the new manager's progress updates if it exists
-		if (currentManager) {
-			this.codeIndexStatusSubscription = currentManager.onProgressUpdate((update: IndexProgressUpdate) => {
-				// Only send updates if this manager is still the current one
-				if (currentManager === this.getCurrentWorkspaceCodeIndexManager()) {
-					// Get the full status from the manager to ensure we have all fields correctly formatted
-					const fullStatus = currentManager.getCurrentStatus()
-					void this.postMessageToWebview({
-						type: "indexingStatusUpdate",
-						values: fullStatus,
-					})
-				}
-			})
-
-			if (this.view) {
-				this.webviewDisposables.push(this.codeIndexStatusSubscription)
-			}
-
-			// Send initial status for the current workspace
-			void this.postMessageToWebview({
-				type: "indexingStatusUpdate",
-				values: currentManager.getCurrentStatus(),
-			})
-		}
+	public getCurrentWorkspaceCodeIndexScope(): CodeIndexWorkspaceScope | undefined {
+		return CodeIndexManagerRegistry.getOrCreateScope(this.context)
 	}
 
 	/**
@@ -3803,6 +3856,11 @@ export class ClineProvider
 			...(await this.getTaskProperties()),
 			...(await this.getGitProperties()),
 		}
+	}
+
+	/** Workspace explicitly associated with this provider, without an active-editor fallback. */
+	public get workspacePath(): string | undefined {
+		return this.currentWorkspacePath
 	}
 
 	public get cwd() {
