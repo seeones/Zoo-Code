@@ -299,10 +299,10 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 
 					// Extract line number if present
 					const match = filePath.match(/(.*):(\d+)(-\d+)?$/)
-					let values = undefined
+					let values: { fromMarkdown: true; line?: number } = { fromMarkdown: true }
 					if (match) {
 						filePath = match[1]
-						values = { line: parseInt(match[2]) }
+						values = { fromMarkdown: true, line: parseInt(match[2]) }
 					}
 
 					// Add ./ prefix if needed

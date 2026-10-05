@@ -42,6 +42,7 @@ describe("CodeIndexScope", () => {
 		})
 		expect(() => scope.init()).toThrow("init failed")
 		expect(scope["_isInitialized"]).toBe(false)
+		expect(vi.mocked(CodeIndexStatusManager).mock.instances[0].dispose).toHaveBeenCalledExactlyOnceWith()
 		expect(() => scope.init()).not.toThrow()
 		expect(scope["_isInitialized"]).toBe(true)
 		scope.dispose()

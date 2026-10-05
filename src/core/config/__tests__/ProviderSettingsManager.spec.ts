@@ -350,6 +350,26 @@ describe("ProviderSettingsManager", () => {
 		})
 	})
 
+	describe("setModeConfig", () => {
+		it("persists removal of one mapping while preserving other modes", async () => {
+			let stored = JSON.stringify({
+				currentApiConfigName: "default",
+				apiConfigs: { default: { id: "default" } },
+				modeApiConfigs: { code: "new-profile", ask: "default" },
+			})
+			mockSecrets.get.mockImplementation(async () => stored)
+			mockSecrets.store.mockImplementation(async (_key: string, value: string) => {
+				stored = value
+			})
+			await providerSettingsManager.setModeConfig("code", undefined)
+			expect(JSON.parse(stored).modeApiConfigs).toEqual({ ask: "default" })
+			expect(await providerSettingsManager.getModeConfigId("code")).toBeUndefined()
+			expect(await providerSettingsManager.getModeConfigId("ask")).toBe("default")
+			await providerSettingsManager.setModeConfig("code", "default")
+			expect(await providerSettingsManager.getModeConfigId("code")).toBe("default")
+		})
+	})
+
 	describe("ListConfig", () => {
 		it("should list all available configs", async () => {
 			const existingConfig: ProviderProfiles = {

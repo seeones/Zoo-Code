@@ -15,9 +15,14 @@ export class CodeIndexScope implements vscode.Disposable {
 		const manager = new CodeIndexStatusManager((workspacePath) =>
 			CodeIndexManagerRegistry.getOrCreate(this.context, workspacePath),
 		)
-		manager.init()
 		this.statusManager = manager
-		this._isInitialized = true
+		try {
+			manager.init()
+			this._isInitialized = true
+		} catch (error) {
+			this.dispose()
+			throw error
+		}
 	}
 
 	public dispose(): void {

@@ -189,15 +189,15 @@ describe("webviewMessageHandler - openFile markdown workspace containment", () =
 		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
 	})
 
-	it("rejects a markdown relative path that traverses outside the workspace", async () => {
+	it.each(["../../.env", "./../../.env"])("rejects a markdown traversal %s", async (text) => {
 		await webviewMessageHandler(mockProvider, {
 			type: "openFile",
-			text: "../../.env",
+			text,
 			values: { fromMarkdown: true },
 		})
 
 		expect(openFile).not.toHaveBeenCalled()
-		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(cannotAccessPathError("../../.env"))
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(cannotAccessPathError(text))
 	})
 
 	it("rejects a markdown absolute path outside the workspace", async () => {

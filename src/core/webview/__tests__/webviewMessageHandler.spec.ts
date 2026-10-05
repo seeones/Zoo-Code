@@ -203,6 +203,7 @@ vi.mock("vscode", () => {
 	const showTextDocument = vi.fn().mockResolvedValue(undefined)
 
 	return {
+		lm: { selectChatModels: vi.fn() },
 		window: {
 			showInformationMessage,
 			showErrorMessage,
@@ -298,38 +299,43 @@ describe("webviewMessageHandler - requestLmStudioModels", () => {
 		})
 	})
 
-	it("successfully fetches models from LMStudio", async () => {
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-			"model-2": {
-				maxTokens: 8192,
-				contextWindow: 16384,
-				supportsPromptCache: false,
-				description: "Test model 2",
-			},
-		}
+	it.each([undefined, "models-request-123"])(
+		"successfully fetches models from LMStudio (requestId=%s)",
+		async (requestId) => {
+			const mockModels: ModelRecord = {
+				"model-1": {
+					maxTokens: 4096,
+					contextWindow: 8192,
+					supportsPromptCache: false,
+					description: "Test model 1",
+				},
+				"model-2": {
+					maxTokens: 8192,
+					contextWindow: 16384,
+					supportsPromptCache: false,
+					description: "Test model 2",
+				},
+			}
 
-		mockGetModels.mockResolvedValue(mockModels)
+			mockGetModels.mockResolvedValue(mockModels)
 
-		await webviewMessageHandler(mockClineProvider, {
-			type: "requestLmStudioModels",
-		})
+			await webviewMessageHandler(mockClineProvider, {
+				type: "requestLmStudioModels",
+				requestId,
+			})
 
-		expect(mockGetModels).toHaveBeenCalledWith({
-			provider: providerIdentifiers.lmstudio,
-			baseUrl: "http://localhost:1234",
-		})
+			expect(mockGetModels).toHaveBeenCalledWith({
+				provider: providerIdentifiers.lmstudio,
+				baseUrl: "http://localhost:1234",
+			})
 
-		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "lmStudioModels",
-			lmStudioModels: mockModels,
-		})
-	})
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "lmStudioModels",
+				requestId,
+				lmStudioModels: mockModels,
+			})
+		},
+	)
 
 	it("prefers the request payload base URL over persisted settings", async () => {
 		mockGetLMStudioModels.mockResolvedValue({})
@@ -401,38 +407,43 @@ describe("webviewMessageHandler - requestOllamaModels", () => {
 		})
 	})
 
-	it("successfully fetches models from Ollama", async () => {
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-			"model-2": {
-				maxTokens: 8192,
-				contextWindow: 16384,
-				supportsPromptCache: false,
-				description: "Test model 2",
-			},
-		}
+	it.each([undefined, "models-request-123"])(
+		"successfully fetches models from Ollama (requestId=%s)",
+		async (requestId) => {
+			const mockModels: ModelRecord = {
+				"model-1": {
+					maxTokens: 4096,
+					contextWindow: 8192,
+					supportsPromptCache: false,
+					description: "Test model 1",
+				},
+				"model-2": {
+					maxTokens: 8192,
+					contextWindow: 16384,
+					supportsPromptCache: false,
+					description: "Test model 2",
+				},
+			}
 
-		mockGetModels.mockResolvedValue(mockModels)
+			mockGetModels.mockResolvedValue(mockModels)
 
-		await webviewMessageHandler(mockClineProvider, {
-			type: "requestOllamaModels",
-		})
+			await webviewMessageHandler(mockClineProvider, {
+				type: "requestOllamaModels",
+				requestId,
+			})
 
-		expect(mockGetModels).toHaveBeenCalledWith({
-			provider: providerIdentifiers.ollama,
-			baseUrl: "http://localhost:1234",
-		})
+			expect(mockGetModels).toHaveBeenCalledWith({
+				provider: providerIdentifiers.ollama,
+				baseUrl: "http://localhost:1234",
+			})
 
-		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "ollamaModels",
-			ollamaModels: mockModels,
-		})
-	})
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "ollamaModels",
+				requestId,
+				ollamaModels: mockModels,
+			})
+		},
+	)
 
 	it("posts empty models response when no models are found", async () => {
 		mockGetModels.mockResolvedValue({})
@@ -447,42 +458,52 @@ describe("webviewMessageHandler - requestOllamaModels", () => {
 		})
 	})
 
-	it("posts empty models response with error message and logs to output on fetch failure", async () => {
-		mockGetModels.mockRejectedValue(new Error("Connection refused"))
+	it.each([undefined, "models-request-123"])(
+		"posts empty models response with error message and logs to output on fetch failure (requestId=%s)",
+		async (requestId) => {
+			mockGetModels.mockRejectedValue(new Error("Connection refused"))
 
-		await webviewMessageHandler(mockClineProvider, {
-			type: "requestOllamaModels",
-		})
+			await webviewMessageHandler(mockClineProvider, {
+				type: "requestOllamaModels",
+				requestId,
+			})
 
-		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "ollamaModels",
-			ollamaModels: {},
-			error: "Connection refused",
-		})
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "ollamaModels",
+				requestId,
+				ollamaModels: {},
+				error: "Connection refused",
+			})
 
-		expect(mockClineProvider.log).toHaveBeenCalledWith(
-			"[requestOllamaModels] Failed to read models for http://localhost:1234: Connection refused",
-		)
-	})
+			expect(mockClineProvider.log).toHaveBeenCalledWith(
+				"[requestOllamaModels] Failed to read models for http://localhost:1234: Connection refused",
+			)
+		},
+	)
 
-	it("distinguishes a model cache refresh failure from a model read failure", async () => {
-		mockFlushModels.mockRejectedValue(new Error("Cache write failed"))
+	it.each([undefined, "models-request-123"])(
+		"distinguishes a model cache refresh failure from a model read failure (requestId=%s)",
+		async (requestId) => {
+			mockFlushModels.mockRejectedValue(new Error("Cache write failed"))
 
-		await webviewMessageHandler(mockClineProvider, {
-			type: "requestOllamaModels",
-			values: { baseUrl: "https://ollama.example.com" },
-		})
+			await webviewMessageHandler(mockClineProvider, {
+				type: "requestOllamaModels",
+				requestId,
+				values: { baseUrl: "https://ollama.example.com" },
+			})
 
-		expect(mockGetModels).not.toHaveBeenCalled()
-		expect(mockClineProvider.log).toHaveBeenCalledWith(
-			"[requestOllamaModels] Failed to refresh model cache for https://ollama.example.com: Cache write failed",
-		)
-		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "ollamaModels",
-			ollamaModels: {},
-			error: "Cache write failed",
-		})
-	})
+			expect(mockGetModels).not.toHaveBeenCalled()
+			expect(mockClineProvider.log).toHaveBeenCalledWith(
+				"[requestOllamaModels] Failed to refresh model cache for https://ollama.example.com: Cache write failed",
+			)
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "ollamaModels",
+				requestId,
+				ollamaModels: {},
+				error: "Cache write failed",
+			})
+		},
+	)
 
 	it("uses baseUrl from message values over saved state", async () => {
 		const mockModels: ModelRecord = {
@@ -522,6 +543,32 @@ describe("webviewMessageHandler - requestOllamaModels", () => {
 		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "ollamaModels",
 			ollamaModels: mockModels,
+		})
+	})
+})
+
+describe("webviewMessageHandler - requestVsCodeLmModels", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each([undefined, "vscode-request-123"])("echoes the optional requestId (%s)", async (requestId) => {
+		const models: vscode.LanguageModelChat[] = [
+			{
+				id: "test-model",
+				name: "Test model",
+				vendor: "test",
+				family: "test",
+				version: "1",
+				maxInputTokens: 8192,
+				countTokens: vi.fn(),
+				sendRequest: vi.fn(),
+			},
+		]
+		vi.mocked(vscode.lm.selectChatModels).mockResolvedValueOnce(models)
+		await webviewMessageHandler(mockClineProvider, { type: "requestVsCodeLmModels", requestId })
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "vsCodeLmModels",
+			vsCodeLmModels: models,
+			requestId,
 		})
 	})
 })

@@ -504,9 +504,9 @@ export class ProviderSettingsManager {
 	}
 
 	/**
-	 * Set the API config for a specific mode.
+	 * Set the API config for a specific mode, or remove its mapping with undefined.
 	 */
-	public async setModeConfig(mode: Mode, configId: string) {
+	public async setModeConfig(mode: Mode, configId: string | undefined) {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
@@ -514,8 +514,11 @@ export class ProviderSettingsManager {
 				if (!providerProfiles.modeApiConfigs) {
 					providerProfiles.modeApiConfigs = {}
 				}
-				// Assign the chosen config ID to this mode
-				providerProfiles.modeApiConfigs[mode] = configId
+				if (configId === undefined) {
+					delete providerProfiles.modeApiConfigs[mode]
+				} else {
+					providerProfiles.modeApiConfigs[mode] = configId
+				}
 				await this.store(providerProfiles)
 			})
 		} catch (error) {

@@ -628,7 +628,7 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 			// Fail an activation write that runs *after* saveConfig succeeded.
 			provider["providerSettingsManager"].setModeConfig = vi
 				.fn()
-				.mockRejectedValue(new Error("mode write failed"))
+				.mockRejectedValueOnce(new Error("mode write failed"))
 			const saveConfig = provider["providerSettingsManager"].saveConfig
 
 			const result = await provider.upsertProviderProfile("new-config", {
@@ -650,6 +650,52 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
 			// No activation success state leaked to the webview.
 			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.create_api_config")
+		})
+
+		test.each([undefined, "prior-id"])(
+			"restores prior mapping %s after a concurrent activation failure",
+			async (priorId) => {
+				const manager = provider["providerSettingsManager"]
+				let modeId: string | undefined = priorId
+				const events: string[] = []
+				manager.getModeConfigId = vi.fn(async () => modeId)
+				manager.setModeConfig = vi.fn(async (_mode, id) => {
+					if (id === "test-id") {
+						// Keep this write pending past the other activation write's rejection.
+						await new Promise<void>((resolve) => setTimeout(resolve, 0))
+						events.push("activation settled")
+					}
+					modeId = id
+				})
+				manager.deleteConfig = vi.fn(async () => {
+					events.push("profile deleted")
+				})
+				vi.spyOn(provider.contextProxy, "setProviderSettings").mockRejectedValueOnce(
+					new Error("activation failed"),
+				)
+
+				const result = await provider.upsertProviderProfile("new-config", {
+					apiProvider: providerIdentifiers.openrouter,
+					openRouterModelId: "openai/gpt-4-turbo",
+				})
+
+				expect(result).toBeUndefined()
+				expect(manager.deleteConfig).toHaveBeenCalledExactlyOnceWith("new-config")
+				expect(await manager.getModeConfigId("code")).toBe(priorId)
+				expect(events).toEqual(["activation settled", "profile deleted"])
+			},
+		)
+
+		test("aborts before saving when the prior mode mapping cannot be read", async () => {
+			const manager = provider["providerSettingsManager"]
+			manager.getModeConfigId = vi.fn().mockRejectedValue(new Error("mapping read failed"))
+			expect(
+				await provider.upsertProviderProfile("new-config", {
+					apiProvider: providerIdentifiers.openrouter,
+				}),
+			).toBeUndefined()
+			expect(manager.saveConfig).not.toHaveBeenCalled()
+			expect(manager.setModeConfig).not.toHaveBeenCalled()
 		})
 
 		test("aborts without deleting an existing profile when the prior profile cannot be read", async () => {

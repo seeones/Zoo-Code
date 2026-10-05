@@ -6,6 +6,8 @@ import {
 	makeExtensionContext,
 	makeWorkspaceConfiguration,
 } from "../../../test-utils/vscode"
+import { CodeIndexScope } from "../code-index-scope"
+import { CodeIndexManagerRegistry } from "../code-index-manager-registry"
 import { CodeIndexManager } from "../manager"
 import { CodeIndexStateManager } from "../state-manager"
 import { CodeIndexStatusManager, type CodeIndexStatus } from "../code-index-status-manager"
@@ -15,6 +17,7 @@ import { CodeIndexStatusManager, type CodeIndexStatus } from "../code-index-stat
 vi.hoisted(() => vi.resetModules())
 
 vi.mock("../../../core/webview/ClineProvider", () => ({ ClineProvider: { getAllInstances: vi.fn(() => []) } }))
+vi.mock("../code-index-manager-registry", () => ({ CodeIndexManagerRegistry: { getOrCreate: vi.fn() } }))
 vi.mock("../manager")
 vi.mock("../state-manager")
 
@@ -294,6 +297,27 @@ describe("CodeIndexStatusManager", () => {
 			manager.dispose()
 			log.mockRestore()
 		}
+	})
+
+	it.each(["lookup", "publication"])("cleans up failed %s initialization through the scope", (failure) => {
+		const source = makeSource("/first")
+		if (failure === "lookup") {
+			vi.mocked(CodeIndexManagerRegistry.getOrCreate).mockImplementationOnce(() => {
+				throw new Error("lookup failed")
+			})
+		} else {
+			vi.mocked(CodeIndexManagerRegistry.getOrCreate).mockReturnValueOnce(source)
+			source.getCurrentStatus.mockImplementationOnce(() => {
+				throw new Error("publication failed")
+			})
+		}
+		const scope = new CodeIndexScope(makeExtensionContext())
+		expect(() => scope.init()).toThrow(`${failure} failed`)
+		expect(disposeEditor).toHaveBeenCalledTimes(1)
+		scope.dispose()
+		expect(disposeEditor).toHaveBeenCalledTimes(1)
+		if (failure === "publication") expect(source.subscription.dispose).toHaveBeenCalledTimes(1)
+		expect(source.dispose).not.toHaveBeenCalled()
 	})
 
 	it("propagates initialization failure without automatic cleanup", () => {

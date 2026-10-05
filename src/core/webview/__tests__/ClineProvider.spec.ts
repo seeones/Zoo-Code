@@ -2144,6 +2144,7 @@ describe("ClineProvider", () => {
 				]),
 			saveConfig: vi.fn().mockResolvedValue("test-id"),
 			setModeConfig: vi.fn(),
+			getModeConfigId: vi.fn().mockResolvedValue(undefined),
 		} as any
 
 		// Update API configuration
@@ -2912,6 +2913,7 @@ describe("ClineProvider", () => {
 
 			;(provider as any).providerSettingsManager = {
 				setModeConfig: vi.fn(),
+				getModeConfigId: vi.fn().mockResolvedValue(undefined),
 				saveConfig: vi.fn().mockResolvedValue(undefined),
 				listConfig: vi
 					.fn()
@@ -2957,6 +2959,7 @@ describe("ClineProvider", () => {
 			})
 			;(provider as any).providerSettingsManager = {
 				setModeConfig: vi.fn(),
+				getModeConfigId: vi.fn().mockResolvedValue(undefined),
 				saveConfig: vi.fn().mockResolvedValue(undefined),
 				listConfig: vi
 					.fn()

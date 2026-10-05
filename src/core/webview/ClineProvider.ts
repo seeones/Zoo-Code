@@ -1942,19 +1942,15 @@ export class ClineProvider
 					}
 				}
 
+				// Read the mapping before writing so an unavailable snapshot aborts safely.
+				const mode = activate ? (await this.getState()).mode : undefined
+				const priorModeConfigId =
+					mode !== undefined ? await this.providerSettingsManager.getModeConfigId(mode) : undefined
 				const id = await this.providerSettingsManager.saveConfig(name, providerSettings)
 
 				if (signal.aborted) return id
 
-				if (activate) {
-					const { mode } = await this.getState()
-					let priorModeConfigId: string | undefined
-					try {
-						priorModeConfigId = await this.providerSettingsManager.getModeConfigId(mode)
-					} catch {
-						// No prior mapping (or unavailable); nothing to restore for the mode.
-					}
-
+				if (mode !== undefined) {
 					// These promises do the following:
 					// 1. Adds or updates the list of provider profiles.
 					// 2. Sets the current provider profile.
@@ -1966,7 +1962,7 @@ export class ClineProvider
 					// We should probably switch to that and verify that it works.
 					// I left the original implementation in just to be safe.
 					try {
-						await Promise.all([
+						const results = await Promise.allSettled([
 							this.updateGlobalState(
 								"listApiConfigMeta",
 								await this.providerSettingsManager.listConfig(),
@@ -1975,6 +1971,9 @@ export class ClineProvider
 							this.providerSettingsManager.setModeConfig(mode, id),
 							this.contextProxy.setProviderSettings(providerSettings),
 						])
+						// Roll back only after every write has finished, including late successes.
+						const failure = results.find((result) => result.status === "rejected")
+						if (failure?.status === "rejected") throw failure.reason
 
 						// Change the provider for the current task.
 						// TODO: We should rename `buildApiHandler` for clarity (e.g. `getProviderClient`).
@@ -1995,11 +1994,7 @@ export class ClineProvider
 								// A swallowed read error (unknown existence) must never reach here.
 								await this.providerSettingsManager.deleteConfig(name)
 							}
-							// A pre-existing mode mapping is restored; a newly created one
-							// has no delete API, so it is left as a best-effort remainder.
-							if (priorModeConfigId) {
-								await this.providerSettingsManager.setModeConfig(mode, priorModeConfigId)
-							}
+							await this.providerSettingsManager.setModeConfig(mode, priorModeConfigId)
 							await this.contextProxy.setValue("currentApiConfigName", priorCurrentApiConfigName)
 							await this.contextProxy.setValues({
 								listApiConfigMeta: await this.providerSettingsManager.listConfig(),

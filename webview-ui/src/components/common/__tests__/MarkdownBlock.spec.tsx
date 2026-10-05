@@ -1,3 +1,5 @@
+import userEvent from "@testing-library/user-event"
+import { vscode } from "@src/utils/vscode"
 import { render, screen } from "@/utils/test-utils"
 
 import MarkdownBlock from "../MarkdownBlock"
@@ -15,6 +17,25 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 }))
 
 describe("MarkdownBlock", () => {
+	it.each([
+		["src/index.ts", "./src/index.ts", undefined],
+		["src/index.ts:12", "./src/index.ts", 12],
+		["../../.env", "./../../.env", undefined],
+		["../../.env:3", "./../../.env", 3],
+		["/workspace/index.ts", "/workspace/index.ts", undefined],
+	])("marks file link %s as Markdown-sourced", async (href, text, line) => {
+		vi.mocked(vscode.postMessage).mockClear()
+		const user = userEvent.setup()
+		render(<MarkdownBlock markdown={`[Open file](${href})`} />)
+		await user.click(await screen.findByRole("link", { name: "Open file" }))
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "openFile",
+			text,
+			values: { fromMarkdown: true, ...(line === undefined ? {} : { line }) },
+		})
+	})
+
 	it("should correctly handle URLs with trailing punctuation", async () => {
 		const markdown = "Check out this link: https://example.com."
 		const { container } = render(<MarkdownBlock markdown={markdown} />)
