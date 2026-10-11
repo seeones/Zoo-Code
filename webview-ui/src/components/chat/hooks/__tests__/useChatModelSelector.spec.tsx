@@ -350,6 +350,28 @@ describe("useChatModelSelector", () => {
 			expect(Object.keys(result.current.models!)).toEqual(["openai/gpt-4o"])
 		})
 
+		it.each([providerIdentifiers.poe, providerIdentifiers.litellm])(
+			"does not query %s on mount or remount when models come from shared state",
+			(provider) => {
+				mockUseExtensionState.mockReturnValue({
+					apiConfiguration: { apiProvider: provider },
+					routerModels: { [provider]: {} },
+				})
+				// A disabled query's status must not hide the shared state's empty result.
+				mockUseRouterModels.mockReturnValue({ isLoading: true })
+				const first = renderHook(() => useChatModelSelector(), { wrapper })
+				expect(first.result.current.isLoading).toBe(false)
+				first.unmount()
+				const second = renderHook(() => useChatModelSelector(), { wrapper })
+				expect(second.result.current.models).toEqual({})
+				second.unmount()
+				for (const [options] of mockUseRouterModels.mock.calls) {
+					expect(options).toEqual({ provider, enabled: false })
+				}
+				expect(mockPostMessage).not.toHaveBeenCalled()
+			},
+		)
+
 		it("reads poe models from the backend-broadcast state routerModels", () => {
 			mockUseExtensionState.mockReturnValue({
 				apiConfiguration: { apiProvider: providerIdentifiers.poe, poeApiKey: "test" },

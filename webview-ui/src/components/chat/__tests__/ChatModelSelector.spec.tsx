@@ -137,6 +137,51 @@ describe("ChatModelSelector", () => {
 		expect(screen.getByTestId("chat-model-option-claude-sonnet-4-20250514")).toBeInTheDocument()
 	})
 
+	test("shows the empty catalog message once loading finishes", async () => {
+		const user = userEvent.setup()
+		mockUseChatModelSelector.mockReturnValue({
+			provider: providerIdentifiers.anthropic,
+			models: {},
+			modelIdKey: "apiModelId",
+			defaultModelId: "",
+			isLoading: false,
+		})
+		render(<ChatModelSelector {...defaultProps} />)
+		await user.click(screen.getByTestId("chat-model-selector-trigger"))
+		expect(screen.getByText("chat:modelListEmpty")).toBeInTheDocument()
+	})
+
+	test("posts the transformed selection for compound configurations", async () => {
+		const user = userEvent.setup()
+		mockUseExtensionState.mockReturnValue({
+			apiConfiguration: { apiProvider: providerIdentifiers.vscodeLm },
+			organizationAllowList: { allowAll: true, providers: {} },
+			currentApiConfigName: "default",
+		})
+		mockUseChatModelSelector.mockReturnValue({
+			provider: providerIdentifiers.vscodeLm,
+			models: { "copilot/gpt-4o": { maxTokens: 1, contextWindow: 1 } },
+			modelIdKey: "vsCodeLmModelSelector",
+			defaultModelId: "",
+			isLoading: false,
+			valueTransform: (modelId: string) => {
+				const [vendor, family] = modelId.split("/")
+				return { vendor, family }
+			},
+		})
+		render(<ChatModelSelector {...defaultProps} />)
+		await user.click(screen.getByTestId("chat-model-selector-trigger"))
+		await user.click(screen.getByTestId("chat-model-option-copilot/gpt-4o"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "upsertApiConfiguration",
+			text: "default",
+			apiConfiguration: {
+				apiProvider: providerIdentifiers.vscodeLm,
+				vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-4o" },
+			},
+		})
+	})
+
 	test("selecting a model posts upsertApiConfiguration message", () => {
 		render(<ChatModelSelector {...defaultProps} />)
 

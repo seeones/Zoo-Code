@@ -47,9 +47,9 @@ const modelRecordSchema = z.record(z.string(), modelInfoSchema)
 const inFlightRefresh = new Map<string, FlightRecord>()
 
 // Upper bound for any fetch started through the single-flight, so a hung endpoint can never keep
-// an in-flight entry pending indefinitely. The value is the maximum of the 5–15 s bounds the
-// individual fetchers it subsumes used to apply, relaxing rather than tightening endpoints that
-// already had a bound.
+// a waiter pending indefinitely. Non-cancellable SDK operations retain their entry until
+// settlement. The value is the maximum of the 5–15 s bounds the individual fetchers used to
+// apply, relaxing rather than tightening endpoints that already had a bound.
 const MODEL_CATALOG_FETCH_TIMEOUT_MS = 15_000
 
 /**
@@ -59,9 +59,9 @@ const MODEL_CATALOG_FETCH_TIMEOUT_MS = 15_000
  * - The internal AbortController is the only object that may cancel the flight's network
  *   request; caller signals are only ever merged into a per-waiter abort view, so one waiter
  *   aborting can never cancel the fetch out from under the others.
- * - When the last waiter detaches while the fetch is still pending, the flight is aborted and
- *   its map entry removed synchronously, so a caller arriving immediately afterwards starts a
- *   fresh fetch instead of joining a doomed one.
+ * - When the last waiter detaches, cancellable flights are aborted and removed immediately.
+ *   SDK calls without cancellation support remain registered until settlement so new waiters
+ *   cannot start overlapping discovery.
  * - Settlement never stores data in the map: it only removes the entry it created, guarded by
  *   flight identity so a late-settling stale flight can never evict a newer one.
  */
@@ -71,6 +71,7 @@ type FlightRecord = {
 	timeoutSignal: AbortSignal
 	waiters: number
 	pending: boolean
+	cancelWhenUnused: boolean
 }
 
 // Cache keys (see getCacheKey) for which we've already reported an empty model response this
@@ -459,6 +460,8 @@ function dedupedFetch(cacheKey: string, options: GetModelsOptions): Promise<Mode
 		controller,
 		timeoutSignal,
 		waiters: 0,
+		cancelWhenUnused:
+			options.provider !== providerIdentifiers.poe && options.provider !== providerIdentifiers.lmstudio,
 		get pending() {
 			return !settled
 		},
@@ -477,8 +480,8 @@ function dedupedFetch(cacheKey: string, options: GetModelsOptions): Promise<Mode
  * Attach one waiter to an existing flight. Each waiter counts itself in record.waiters and
  * carries a view signal that fires at the earlier of the flight's bound or its own caller's
  * abort -- the view governs only this waiter's wait, never the network. When the last waiter
- * detaches while the fetch is still pending, the flight is aborted and released synchronously,
- * so a caller arriving afterwards provably starts a fresh flight.
+ * detaches, cancellable flights are aborted and released synchronously. Non-cancellable SDK
+ * operations stay registered until settlement, allowing a remounted caller to reuse them.
  */
 function joinFlight(cacheKey: string, record: FlightRecord, callerSignal?: AbortSignal): Promise<ModelRecord> {
 	throwIfAborted(callerSignal)
@@ -494,7 +497,7 @@ function joinFlight(cacheKey: string, record: FlightRecord, callerSignal?: Abort
 		detached = true
 		removeViewListener?.()
 		record.waiters--
-		if (record.waiters === 0 && record.pending) {
+		if (record.waiters === 0 && record.pending && record.cancelWhenUnused) {
 			// Synchronous release: abort the shared fetch and drop the entry before any further
 			// await point runs, so a late joiner never sees a doomed flight.
 			record.controller.abort()

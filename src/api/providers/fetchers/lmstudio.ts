@@ -74,8 +74,8 @@ export async function getLMStudioModels(
 		await axios.get(`${baseUrl}/v1/models`, { signal: opts?.signal })
 
 		// The SDK's model-list calls expose no cancellation option, so an abort
-		// during them cannot reach the network; releasing the shared cache entry
-		// and stopping the waiters happens at the model-cache layer.
+		// during them cannot reach the network. The model cache stops cancelled waiters
+		// but retains this operation until settlement to prevent duplicate discovery.
 		const client = new LMStudioClient({ baseUrl: lmsUrl })
 
 		// First, try to get all downloaded models

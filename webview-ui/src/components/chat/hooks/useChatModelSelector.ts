@@ -104,7 +104,10 @@ export const useChatModelSelector = (): ChatModelSelectorData => {
 	const activeProvider = isRetiredProvider(provider) ? undefined : provider
 	const routerConfig = activeProvider ? ROUTER_PROVIDERS[activeProvider] : undefined
 
-	const routerModels = useRouterModels({ provider: activeProvider, enabled: !!routerConfig })
+	const routerModels = useRouterModels({
+		provider: activeProvider,
+		enabled: !!routerConfig && !routerConfig.fromState,
+	})
 
 	// Message-based providers: request the models on mount and keep the
 	// latest list delivered by the backend. Each request carries a unique
@@ -230,7 +233,7 @@ export const useChatModelSelector = (): ChatModelSelectorData => {
 				models: source?.[activeProvider] ?? null,
 				modelIdKey: routerConfig.modelIdKey,
 				defaultModelId,
-				isLoading: routerModels.isLoading,
+				isLoading: routerConfig.fromState ? false : routerModels.isLoading,
 			}
 		}
 

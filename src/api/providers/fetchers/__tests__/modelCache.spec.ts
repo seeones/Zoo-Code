@@ -41,6 +41,8 @@ vi.mock("fs", () => ({
 }))
 
 // Mock all the model fetchers
+vi.mock("../poe")
+vi.mock("../lmstudio")
 vi.mock("../litellm")
 vi.mock("../openrouter")
 vi.mock("../requesty")
@@ -69,6 +71,8 @@ import * as fsSync from "fs"
 import NodeCache from "node-cache"
 import { TelemetryService } from "@roo-code/telemetry"
 import { getModels, getModelsFromCache } from "../modelCache"
+import { getPoeModels } from "../poe"
+import { getLMStudioModels } from "../lmstudio"
 import { getLiteLLMModels } from "../litellm"
 import { getOpenRouterModels } from "../openrouter"
 import { getRequestyModels } from "../requesty"
@@ -1674,3 +1678,82 @@ it("forwards the caller signal on the auth-scoped bypass without entering the fl
 		boundSpy.mockRestore()
 	}
 })
+
+// These SDKs cannot stop discovery when their caller aborts. Keep the pending
+// operation registered across selector unmount/remount and even after its bound.
+it.each([providerIdentifiers.poe, providerIdentifiers.lmstudio])(
+	"reuses pending %s discovery after cancellation and timeout until it settles",
+	async (provider) => {
+		setupCancellationMocks()
+		const timeoutController = new AbortController()
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal)
+		const fetcher = provider === providerIdentifiers.poe ? vi.mocked(getPoeModels) : vi.mocked(getLMStudioModels)
+		let resolveDiscovery!: (models: ModelRecord) => void
+		fetcher.mockReturnValueOnce(
+			new Promise<ModelRecord>((resolve) => {
+				resolveDiscovery = resolve
+			}),
+		)
+		try {
+			const controller = new AbortController()
+			const first = getModels({ provider, signal: controller.signal })
+			controller.abort()
+			await expect(first).rejects.toMatchObject({ name: "AbortError" })
+			expect(getEventListeners(controller.signal, "abort")).toHaveLength(0)
+
+			const remounted = getModels({ provider })
+			expect(fetcher).toHaveBeenCalledTimes(1)
+			timeoutController.abort()
+			await expect(remounted).rejects.toMatchObject({ name: "AbortError" })
+			await expect(getModels({ provider })).rejects.toMatchObject({ name: "AbortError" })
+			expect(fetcher).toHaveBeenCalledTimes(1)
+			expect(getEventListeners(timeoutController.signal, "abort")).toHaveLength(0)
+
+			resolveDiscovery(cancelledModels)
+			await drainMicrotasks()
+			expect(getEventListeners(timeoutController.signal, "abort")).toHaveLength(0)
+			// Once the old SDK operation has actually finished, another request may start.
+			timeoutSpy.mockRestore()
+			fetcher.mockResolvedValueOnce(cancelledModelsB)
+			await expect(getModels({ provider })).resolves.toEqual(cancelledModelsB)
+			expect(fetcher).toHaveBeenCalledTimes(2)
+		} finally {
+			resolveDiscovery(cancelledModels)
+			timeoutSpy.mockRestore()
+		}
+	},
+)
+
+it.each([providerIdentifiers.poe, providerIdentifiers.lmstudio])(
+	"delivers the same %s discovery to a remounted caller and releases listeners on settlement",
+	async (provider) => {
+		setupCancellationMocks()
+		const timeoutController = new AbortController()
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal)
+		const fetcher = provider === providerIdentifiers.poe ? vi.mocked(getPoeModels) : vi.mocked(getLMStudioModels)
+		let resolveDiscovery!: (models: ModelRecord) => void
+		fetcher.mockReturnValueOnce(
+			new Promise<ModelRecord>((resolve) => {
+				resolveDiscovery = resolve
+			}),
+		)
+		try {
+			const controller = new AbortController()
+			const first = getModels({ provider, signal: controller.signal })
+			controller.abort()
+			await expect(first).rejects.toMatchObject({ name: "AbortError" })
+			const remounted = getModels({ provider })
+			expect(fetcher).toHaveBeenCalledTimes(1)
+			const args = fetcher.mock.calls[0]
+			const options = args[args.length - 1]
+			expect(options).toEqual({ signal: expect.objectContaining({ aborted: false }) })
+			resolveDiscovery(cancelledModels)
+			await expect(remounted).resolves.toEqual(cancelledModels)
+			expect(getEventListeners(controller.signal, "abort")).toHaveLength(0)
+			expect(getEventListeners(timeoutController.signal, "abort")).toHaveLength(0)
+		} finally {
+			resolveDiscovery(cancelledModels)
+			timeoutSpy.mockRestore()
+		}
+	},
+)

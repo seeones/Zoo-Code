@@ -51,6 +51,29 @@ describe("router request cleanup", () => {
 		})
 	})
 
+	it("times out, cancels the matching request, and releases listeners and timers", async () => {
+		const add = vi.spyOn(window, "addEventListener")
+		const remove = vi.spyOn(window, "removeEventListener")
+		const controller = new AbortController()
+		const addAbort = vi.spyOn(controller.signal, "addEventListener")
+		const removeAbort = vi.spyOn(controller.signal, "removeEventListener")
+		const pending = fetchRouterModels(providerIdentifiers.openrouter, controller.signal)
+		const rejected = expect(pending).rejects.toThrow("Router models request timed out")
+		const request = vi.mocked(vscode.postMessage).mock.calls[0][0]
+		const listener = add.mock.calls.find(([type]) => type === "message")![1]
+		await vi.advanceTimersByTimeAsync(10_000)
+		await rejected
+		expect(remove).toHaveBeenCalledWith("message", listener)
+		expect(removeAbort).toHaveBeenCalledWith("abort", addAbort.mock.calls[0][1])
+		expect(vi.getTimerCount()).toBe(0)
+		expect(vscode.postMessage).toHaveBeenLastCalledWith({
+			type: "cancelModelRequest",
+			requestId: request.requestId,
+		})
+		controller.abort()
+		expect(vscode.postMessage).toHaveBeenCalledTimes(2)
+	})
+
 	it("aborts a pending query when its last observer unmounts", () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
 		const remove = vi.spyOn(window, "removeEventListener")

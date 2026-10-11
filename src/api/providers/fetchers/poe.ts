@@ -12,8 +12,8 @@ export async function getPoeModels(
 		// fetchPoeModels populates the internal model store, then getModels()
 		// returns only code-capable models with camelCase fields.
 		// The Poe SDK exposes no cancellation option, so the caller's signal
-		// cannot reach the network here; an abort still releases the shared
-		// cache entry and stops the waiters at the model-cache layer.
+		// cannot reach the network here. The model cache stops cancelled waiters
+		// but retains this operation until settlement to prevent duplicate discovery.
 		throwIfAborted(opts?.signal)
 		await fetchPoeModels({ apiKey, baseURL })
 		throwIfAborted(opts?.signal)
