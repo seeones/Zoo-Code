@@ -33,6 +33,8 @@ import {
 
 import {
 	type ProviderSettings,
+	type ExtensionMessage,
+	type WebviewMessage,
 	type ExperimentId,
 	type TelemetrySetting,
 	DEFAULT_AUTO_CLOSE_ZOO_OPENED_FILES,
@@ -152,6 +154,41 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const confirmDialogHandler = useRef<() => void>()
 
 	const [cachedState, setCachedState] = useState(() => extensionState)
+	const apiConfigurationBaseline = useRef(extensionState.apiConfiguration)
+	const pendingApiConfigurationSave = useRef<{ requestId: string; configuration: ProviderSettings }>()
+	const [isSavingApiConfiguration, setIsSavingApiConfiguration] = useState(false)
+
+	useEffect(() => {
+		const handleSaveResult = (event: MessageEvent<ExtensionMessage>) => {
+			const pending = pendingApiConfigurationSave.current
+			if (event.data.type !== "apiConfigurationSaved" || !pending || event.data.requestId !== pending.requestId)
+				return
+			pendingApiConfigurationSave.current = undefined
+			setIsSavingApiConfiguration(false)
+			if (event.data.success) {
+				apiConfigurationBaseline.current = pending.configuration
+			} else {
+				// Retain the original baseline so a retry includes every rejected edit.
+				setChangeDetected(true)
+			}
+		}
+		window.addEventListener("message", handleSaveResult)
+		return () => window.removeEventListener("message", handleSaveResult)
+	}, [])
+
+	useEffect(() => {
+		if (!isSavingApiConfiguration) return
+		const pending = pendingApiConfigurationSave.current
+		// The backend allows up to 60s of queue wait plus 30s for the mutation.
+		// Recover even if the request or acknowledgement was lost during a reload.
+		const timeout = setTimeout(() => {
+			if (pendingApiConfigurationSave.current !== pending) return
+			pendingApiConfigurationSave.current = undefined
+			setIsSavingApiConfiguration(false)
+			setChangeDetected(true)
+		}, 120_000)
+		return () => clearTimeout(timeout)
+	}, [isSavingApiConfiguration])
 
 	const {
 		alwaysAllowReadOnly,
@@ -231,6 +268,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			return
 		}
 
+		apiConfigurationBaseline.current = extensionState.apiConfiguration
+		pendingApiConfigurationSave.current = undefined
+		setIsSavingApiConfiguration(false)
 		setCachedState((prevCachedState) => ({ ...prevCachedState, ...extensionState }))
 		prevApiConfigName.current = currentApiConfigName
 		prevMode.current = mode
@@ -244,6 +284,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		}
 
 		handledSettingsImportedAt.current = settingsImportedAt
+		apiConfigurationBaseline.current = extensionState.apiConfiguration
+		pendingApiConfigurationSave.current = undefined
+		setIsSavingApiConfiguration(false)
 		setCachedState((prevCachedState) => ({ ...prevCachedState, ...extensionState }))
 		setChangeDetected(false)
 	}, [settingsImportedAt, extensionState])
@@ -379,8 +422,21 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	const isSettingValid = !errorMessage
 
+	const postApiConfiguration = (message: Pick<WebviewMessage, "type" | "text" | "values">) => {
+		if (pendingApiConfigurationSave.current) return
+		const requestId = `save-profile-${Date.now()}-${Math.random().toString(36).slice(2)}`
+		pendingApiConfigurationSave.current = { requestId, configuration: apiConfiguration }
+		setIsSavingApiConfiguration(true)
+		vscode.postMessage({
+			...message,
+			requestId,
+			apiConfiguration,
+			apiConfigurationBaseline: apiConfigurationBaseline.current,
+		})
+	}
+
 	const handleSubmit = () => {
-		if (isSettingValid) {
+		if (isSettingValid && !pendingApiConfigurationSave.current) {
 			vscode.postMessage({
 				type: "updateSettings",
 				updatedSettings: {
@@ -459,7 +515,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 			// These have more complex logic so they aren't (yet) handled
 			// by the `updateSettings` message.
-			vscode.postMessage({ type: "upsertApiConfiguration", text: currentApiConfigName, apiConfiguration })
+			postApiConfiguration({ type: "upsertApiConfiguration", text: currentApiConfigName })
 			vscode.postMessage({ type: "telemetrySetting", text: telemetrySetting })
 			vscode.postMessage({ type: "debugSetting", bool: cachedState.debug })
 
@@ -485,6 +541,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		(confirm: boolean) => {
 			if (confirm) {
 				// Discard changes: Reset state and flag
+				apiConfigurationBaseline.current = extensionState.apiConfiguration
+				pendingApiConfigurationSave.current = undefined
+				setIsSavingApiConfiguration(false)
 				setCachedState(extensionState) // Revert to original state
 				setChangeDetected(false) // Reset change flag
 				confirmDialogHandler.current?.() // Execute the pending action (e.g., tab switch)
@@ -694,7 +753,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							variant={isSettingValid ? "primary" : "secondary"}
 							className={!isSettingValid ? "!border-vscode-errorForeground" : ""}
 							onClick={handleSubmit}
-							disabled={!isChangeDetected || !isSettingValid}
+							disabled={!isChangeDetected || !isSettingValid || isSavingApiConfiguration}
 							data-testid="save-button">
 							{t("settings:common.save")}
 						</Button>
@@ -773,6 +832,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 								<Section>
 									<ApiConfigManager
+										disabled={isSavingApiConfiguration}
 										currentApiConfigName={currentApiConfigName}
 										listApiConfigMeta={listApiConfigMeta}
 										onSelectConfig={(configName: string) =>
@@ -783,20 +843,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 										onDeleteConfig={(configName: string) =>
 											vscode.postMessage({ type: "deleteApiConfiguration", text: configName })
 										}
-										onRenameConfig={(oldName: string, newName: string) => {
-											vscode.postMessage({
+										onRenameConfig={(oldName: string, newName: string) =>
+											postApiConfiguration({
 												type: "renameApiConfiguration",
 												values: { oldName, newName },
-												apiConfiguration,
 											})
-											prevApiConfigName.current = newName
-										}}
+										}
 										onUpsertConfig={(configName: string) =>
-											vscode.postMessage({
-												type: "upsertApiConfiguration",
-												text: configName,
-												apiConfiguration,
-											})
+											postApiConfiguration({ type: "upsertApiConfiguration", text: configName })
 										}
 									/>
 									<ApiOptions

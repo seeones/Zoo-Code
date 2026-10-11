@@ -1,5 +1,5 @@
 import { providerIdentifiers, openAiModelInfoSaneDefaults, type ProviderSettings } from "@roo-code/types"
-import { screen, fireEvent, waitFor } from "@testing-library/react"
+import { act, screen, fireEvent, waitFor } from "@testing-library/react"
 
 import { renderWithExtensionState } from "@/utils/test-utils"
 import { vi, describe, it, expect, beforeEach } from "vitest"
@@ -249,6 +249,7 @@ vi.mock("../SettingsSearch", () => ({
 
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import ApiOptions from "../ApiOptions"
+import ApiConfigManager from "../ApiConfigManager"
 
 describe("SettingsView - Unsaved Changes Detection", () => {
 	let queryClient: QueryClient
@@ -320,6 +321,9 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		vi.mocked(ApiConfigManager).mockImplementation(() => (
+			<div data-testid="api-config-manager">ApiConfigManager</div>
+		))
 		// Reset the ApiOptions mock to its default implementation
 		vi.mocked(ApiOptions).mockImplementation(() => {
 			// Don't do anything with props, just render a div
@@ -674,7 +678,9 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			requestId: expect.any(String),
 			text: "default",
+			apiConfigurationBaseline: liveApiConfiguration,
 			apiConfiguration: {
 				apiProvider: providerIdentifiers.nanogpt,
 				nanoGptApiKey: "unsaved-key",
@@ -682,6 +688,124 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				nanoGptRoutingPreference: "tools",
 			},
 		})
+		const firstSave = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((message) => message.type === "upsertApiConfiguration")!
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: "unrelated", success: true },
+			}),
+		)
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: firstSave.requestId, success: false },
+			}),
+		)
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		postMessage.mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		const retry = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((message) => message.type === "upsertApiConfiguration")!
+		expect(retry.apiConfigurationBaseline).toEqual(liveApiConfiguration)
+		expect(retry.apiConfiguration).toEqual(firstSave.apiConfiguration)
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: retry.requestId, success: true },
+			}),
+		)
+		postMessage.mockClear()
+		fireEvent.change(screen.getByTestId("cached-nanogpt-model"), { target: { value: "openai/original" } })
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "upsertApiConfiguration",
+				apiConfigurationBaseline: expect.objectContaining({ nanoGptModelId: "openai/next" }),
+				apiConfiguration: expect.objectContaining({ nanoGptModelId: "openai/original" }),
+			}),
+		)
+	})
+
+	it.each(["upsert", "rename"])("advances the baseline after a confirmed profile-manager %s", (operation) => {
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<input
+				data-testid="profile-temperature"
+				value={apiConfiguration.modelTemperature ?? ""}
+				onChange={(event) => setApiConfigurationField("modelTemperature", Number(event.target.value))}
+			/>
+		))
+		vi.mocked(ApiConfigManager).mockImplementation(({ onRenameConfig, onUpsertConfig }) => (
+			<button
+				data-testid="persist-profile"
+				onClick={() =>
+					operation === "rename" ? onRenameConfig("default", "renamed") : onUpsertConfig("default")
+				}>
+				Save profile
+			</button>
+		))
+		renderWithExtensionState(<SettingsView onDone={vi.fn()} />, { queryClient })
+		fireEvent.change(screen.getByTestId("profile-temperature"), { target: { value: "0.5" } })
+		fireEvent.click(screen.getByTestId("persist-profile"))
+		const first = postMessage.mock.calls
+			.map(([message]) => message)
+			.find(
+				(message) =>
+					message.type === (operation === "rename" ? "renameApiConfiguration" : "upsertApiConfiguration"),
+			)!
+		expect(first.requestId).toEqual(expect.any(String))
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: first.requestId, success: true },
+			}),
+		)
+		postMessage.mockClear()
+		fireEvent.change(screen.getByTestId("profile-temperature"), { target: { value: "0.7" } })
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "upsertApiConfiguration",
+				apiConfigurationBaseline: expect.objectContaining({ modelTemperature: 0.5 }),
+				apiConfiguration: expect.objectContaining({ modelTemperature: 0.7 }),
+			}),
+		)
+	})
+
+	it("re-enables Save with the original baseline when its acknowledgement is lost", () => {
+		vi.mocked(ApiOptions).mockImplementation(({ setApiConfigurationField }) => (
+			<button data-testid="edit-before-timeout" onClick={() => setApiConfigurationField("modelTemperature", 0.5)}>
+				Edit
+			</button>
+		))
+		const view = renderWithExtensionState(<SettingsView onDone={vi.fn()} />, { queryClient })
+		fireEvent.click(screen.getByTestId("edit-before-timeout"))
+		vi.useFakeTimers()
+		try {
+			fireEvent.click(screen.getByTestId("save-button"))
+			const first = postMessage.mock.calls
+				.map(([message]) => message)
+				.find((message) => message.type === "upsertApiConfiguration")!
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			expect(vi.mocked(ApiConfigManager).mock.lastCall?.[0].disabled).toBe(true)
+			act(() => vi.advanceTimersByTime(120_000))
+			expect(vi.mocked(ApiConfigManager).mock.lastCall?.[0].disabled).toBe(false)
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			postMessage.mockClear()
+			fireEvent.click(screen.getByTestId("save-button"))
+			const retry = postMessage.mock.calls
+				.map(([message]) => message)
+				.find((message) => message.type === "upsertApiConfiguration")!
+			expect(retry.requestId).not.toBe(first.requestId)
+			expect(retry.apiConfigurationBaseline).toEqual(first.apiConfigurationBaseline)
+			expect(retry.apiConfiguration).toEqual(first.apiConfiguration)
+		} finally {
+			view.unmount()
+			vi.useRealTimers()
+		}
 	})
 
 	it("keeps OpenAI-compatible reasoning edits cached until Save despite a live state refresh", async () => {
@@ -714,7 +838,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
 			...defaultExtensionState,
-			apiConfiguration: { ...configuration },
+			apiConfiguration: { ...configuration, openAiModelId: "concurrent-model" },
 		})
 		view.rerender(<SettingsView onDone={vi.fn()} />)
 
@@ -726,7 +850,9 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		fireEvent.click(screen.getByTestId("save-button"))
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			requestId: expect.any(String),
 			text: "default",
+			apiConfigurationBaseline: configuration,
 			apiConfiguration: {
 				...configuration,
 				enableReasoningEffort: true,

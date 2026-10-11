@@ -281,12 +281,71 @@ describe("webviewMessageHandler - organization allowlist enforcement", () => {
 				apiConfiguration,
 			})
 
-			expect(saveConfig).toHaveBeenCalledWith("new", { ...apiConfiguration, id: "profile-id" })
-			expect(deleteConfig).toHaveBeenCalledWith("old")
-			expect(activateProviderProfile).toHaveBeenCalledWith({ name: "new" })
+			expect(mockClineProvider.upsertProviderProfile).toHaveBeenCalledWith(
+				"new",
+				apiConfiguration,
+				true,
+				undefined,
+				"old",
+			)
+			expect(saveConfig).not.toHaveBeenCalled()
+			expect(deleteConfig).not.toHaveBeenCalled()
 			expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
 		},
 	)
+
+	it.each([{ text: "profile" }, { apiConfiguration: {} }])(
+		"rejects incomplete save requests with an acknowledgement",
+		async (fields) => {
+			await webviewMessageHandler(mockClineProvider, {
+				type: "upsertApiConfiguration",
+				requestId: "invalid-save",
+				...fields,
+			})
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "apiConfigurationSaved",
+				requestId: "invalid-save",
+				success: false,
+			})
+		},
+	)
+
+	it.each(["success", "conflict", "error"])("acknowledges an API configuration save after %s", async (outcome) => {
+		const save =
+			outcome === "error"
+				? vi.fn().mockRejectedValue(new Error("save failed"))
+				: vi.fn().mockResolvedValue(outcome === "success" ? "id" : undefined)
+		setUpsertSpy(save)
+		await webviewMessageHandler(mockClineProvider, {
+			type: "upsertApiConfiguration",
+			text: "profile",
+			requestId: "save-request",
+			apiConfiguration: { apiProvider: providerIdentifiers.anthropic, apiModelId: "claude-sonnet-4-20250514" },
+		})
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "apiConfigurationSaved",
+			requestId: "save-request",
+			success: outcome === "success",
+		})
+	})
+
+	it.each(["success", "conflict", "invalid", "unchanged"])("acknowledges profile rename %s", async (outcome) => {
+		setUpsertSpy(vi.fn().mockResolvedValue(outcome === "success" ? "id" : undefined))
+		await webviewMessageHandler(mockClineProvider, {
+			type: "renameApiConfiguration",
+			requestId: "rename-request",
+			values: { oldName: "old", newName: outcome === "unchanged" ? "old" : "new" },
+			apiConfiguration:
+				outcome === "invalid"
+					? undefined
+					: { apiProvider: providerIdentifiers.anthropic, apiModelId: "claude-sonnet-4-20250514" },
+		})
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "apiConfigurationSaved",
+			requestId: "rename-request",
+			success: outcome === "success" || outcome === "unchanged",
+		})
+	})
 
 	it("allows an allow-listed model on upsertApiConfiguration", async () => {
 		const upsertProviderProfile = vi.fn().mockResolvedValue("id")
@@ -301,6 +360,8 @@ describe("webviewMessageHandler - organization allowlist enforcement", () => {
 		expect(upsertProviderProfile).toHaveBeenCalledWith(
 			"profile",
 			expect.objectContaining({ apiModelId: "claude-sonnet-4-20250514" }),
+			true,
+			undefined,
 		)
 		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
 	})
@@ -410,6 +471,92 @@ describe("webviewMessageHandler - requestLmStudioModels", () => {
 		})
 	})
 
+	it.each(["cancel", "dispose"])(
+		"detaches a preview on %s while retaining discovery for the next waiter",
+		async (action) => {
+			let finish!: (models: ModelRecord) => void
+			mockGetLMStudioModels.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finish = resolve
+					}),
+			)
+			const values = { baseUrl: "http://localhost:4567" }
+			const first = webviewMessageHandler(mockClineProvider, {
+				type: "requestLmStudioModels",
+				requestId: "first-preview",
+				values,
+			})
+			await vi.waitFor(() => expect(mockGetLMStudioModels).toHaveBeenCalledTimes(1))
+			if (action === "cancel") {
+				await webviewMessageHandler(mockClineProvider, {
+					type: "cancelModelRequest",
+					requestId: "first-preview",
+				})
+			} else {
+				mockClineProvider.modelRequests.dispose()
+				Object.defineProperty(mockClineProvider, "modelRequests", {
+					value: new ModelRequestRegistry(),
+					configurable: true,
+				})
+			}
+			await first
+			const second = webviewMessageHandler(mockClineProvider, {
+				type: "requestLmStudioModels",
+				requestId: "second-preview",
+				values,
+			})
+			await Promise.resolve()
+			expect(mockGetLMStudioModels).toHaveBeenCalledTimes(1)
+			finish({})
+			await second
+			expect(mockClineProvider.postMessageToWebview).not.toHaveBeenCalledWith(
+				expect.objectContaining({ requestId: "first-preview" }),
+			)
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({ requestId: "second-preview" }),
+			)
+		},
+	)
+
+	it("bounds preview waiters without starting overlapping SDK discovery after timeout", async () => {
+		const timeout = new AbortController()
+		const timeoutSignal = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal)
+		let finish!: (models: ModelRecord) => void
+		mockGetLMStudioModels.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve
+				}),
+		)
+		try {
+			const values = { baseUrl: "http://localhost:5432" }
+			const first = webviewMessageHandler(mockClineProvider, {
+				type: "requestLmStudioModels",
+				requestId: "timeout-preview",
+				values,
+			})
+			await vi.waitFor(() => expect(mockGetLMStudioModels).toHaveBeenCalledTimes(1))
+			timeout.abort()
+			await first
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({ requestId: "timeout-preview", lmStudioModels: {} }),
+			)
+			timeoutSignal.mockReturnValue(new AbortController().signal)
+			const second = webviewMessageHandler(mockClineProvider, {
+				type: "requestLmStudioModels",
+				requestId: "retry-preview",
+				values,
+			})
+			await Promise.resolve()
+			expect(mockGetLMStudioModels).toHaveBeenCalledTimes(1)
+			finish({})
+			await second
+		} finally {
+			timeoutSignal.mockRestore()
+		}
+	})
+
 	it("successfully fetches models from LMStudio", async () => {
 		const mockModels: ModelRecord = {
 			"model-1": {
@@ -505,7 +652,7 @@ describe("webviewMessageHandler - requestLmStudioModels", () => {
 			values: { baseUrl: "" },
 		})
 
-		expect(mockGetLMStudioModels).toHaveBeenCalledWith("", { signal: expect.any(AbortSignal) })
+		expect(mockGetLMStudioModels).toHaveBeenCalledWith("http://localhost:1234", { signal: expect.any(AbortSignal) })
 		expect(mockGetModels).not.toHaveBeenCalled()
 	})
 })

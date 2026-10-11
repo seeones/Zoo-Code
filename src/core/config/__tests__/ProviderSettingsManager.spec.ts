@@ -12,7 +12,12 @@ import {
 import { clearAllMocks } from "../../../test-utils/reset"
 import { makeExtensionContext } from "../../../test-utils/vscode"
 
-import { ProviderSettingsManager, ProviderProfiles, SyncCloudProfilesResult } from "../ProviderSettingsManager"
+import {
+	ProviderProfileConflictError,
+	ProviderSettingsManager,
+	ProviderProfiles,
+	SyncCloudProfilesResult,
+} from "../ProviderSettingsManager"
 
 // `export()` builds an API handler per profile to read model capabilities. Mock
 // buildApiHandler with the real @roo-code/types model definitions so the token-field
@@ -71,6 +76,121 @@ describe("ProviderSettingsManager", () => {
 		mockGlobalState.update.mockResolvedValue(undefined)
 
 		providerSettingsManager = new ProviderSettingsManager(mockContext)
+	})
+
+	describe("concurrent profile edits", () => {
+		const original = {
+			apiProvider: providerIdentifiers.openrouter,
+			openRouterApiKey: "old-key",
+			openRouterModelId: "old-model",
+		}
+		beforeEach(async () => {
+			const storage = new Map<string, string>()
+			mockSecrets.get.mockImplementation(async (key: string) => storage.get(key))
+			mockSecrets.store.mockImplementation(async (key: string, value: string) => {
+				storage.set(key, value)
+			})
+			await providerSettingsManager.saveConfig("profile", original)
+		})
+
+		it.each(["save", "delete"] as const)("allows %s with a matching expected profile", async (operation) => {
+			const expected = await providerSettingsManager.getProfile({ name: "profile" })
+			if (operation === "save") {
+				await providerSettingsManager.saveConfig("profile", { ...original, openRouterModelId: "new" }, expected)
+				expect(await providerSettingsManager.getProfile({ name: "profile" })).toMatchObject({
+					openRouterModelId: "new",
+				})
+			} else {
+				await providerSettingsManager.deleteConfig("profile", expected)
+				expect(await providerSettingsManager.hasConfig("profile")).toBe(false)
+			}
+		})
+
+		it.each(["save", "delete"] as const)(
+			"rejects %s without writing when the expected profile is stale",
+			async (operation) => {
+				const expected = await providerSettingsManager.getProfile({ name: "profile" })
+				await providerSettingsManager.saveConfig("profile", { ...original, openRouterApiKey: "new-key" })
+				const stored = await providerSettingsManager.export()
+				mockSecrets.store.mockClear()
+				const mutation =
+					operation === "save"
+						? providerSettingsManager.saveConfig("profile", original, expected)
+						: providerSettingsManager.deleteConfig("profile", expected)
+				await expect(mutation).rejects.toBeInstanceOf(ProviderProfileConflictError)
+				expect(mockSecrets.store).not.toHaveBeenCalled()
+				expect(await providerSettingsManager.export()).toEqual(stored)
+			},
+		)
+
+		it.each([true, false])(
+			"preserves concurrent credential and model edits (model first: %s)",
+			async (modelFirst) => {
+				const model = { ...original, openRouterModelId: "new-model" }
+				const settings = { ...original, openRouterApiKey: "new-key" }
+				for (const edit of modelFirst ? [model, settings] : [settings, model]) {
+					await providerSettingsManager.saveConfig("profile", edit, undefined, original)
+				}
+				expect(await providerSettingsManager.getProfile({ name: "profile" })).toMatchObject({
+					openRouterApiKey: "new-key",
+					openRouterModelId: "new-model",
+				})
+			},
+		)
+
+		it("rejects conflicting edits and provider switches without writes", async () => {
+			await providerSettingsManager.saveConfig("profile", { ...original, openRouterModelId: "new-model" })
+			mockSecrets.store.mockClear()
+			await expect(
+				providerSettingsManager.saveConfig(
+					"profile",
+					{ ...original, openRouterModelId: "other-model" },
+					undefined,
+					original,
+				),
+			).rejects.toBeInstanceOf(ProviderProfileConflictError)
+			expect(mockSecrets.store).not.toHaveBeenCalled()
+			await providerSettingsManager.saveConfig("profile", { apiProvider: providerIdentifiers.anthropic })
+			mockSecrets.store.mockClear()
+			await expect(
+				providerSettingsManager.saveConfig(
+					"profile",
+					{ ...original, openRouterModelId: "other-model" },
+					undefined,
+					original,
+				),
+			).rejects.toBeInstanceOf(ProviderProfileConflictError)
+			expect(mockSecrets.store).not.toHaveBeenCalled()
+		})
+
+		it("accepts identical concurrent provider changes", async () => {
+			const updated = { apiProvider: providerIdentifiers.anthropic, apiKey: "new-provider-key" }
+			await providerSettingsManager.saveConfig("profile", updated, undefined, original)
+			await providerSettingsManager.saveConfig("profile", updated, undefined, original)
+			expect(await providerSettingsManager.getProfile({ name: "profile" })).toMatchObject(updated)
+		})
+
+		it("renames atomically while preserving a concurrent model edit and profile ID", async () => {
+			const { id } = await providerSettingsManager.getProfile({ name: "profile" })
+			await providerSettingsManager.saveConfig("profile", { ...original, openRouterModelId: "new-model" })
+			await providerSettingsManager.saveConfig(
+				"renamed",
+				{ ...original, openRouterApiKey: "new-key" },
+				undefined,
+				original,
+				"profile",
+			)
+			expect(await providerSettingsManager.hasConfig("profile")).toBe(false)
+			expect(await providerSettingsManager.getProfile({ name: "renamed" })).toMatchObject({
+				id,
+				openRouterModelId: "new-model",
+				openRouterApiKey: "new-key",
+			})
+			await expect(
+				providerSettingsManager.saveConfig("default", original, undefined, original, "renamed"),
+			).rejects.toBeInstanceOf(ProviderProfileConflictError)
+			expect(await providerSettingsManager.hasConfig("renamed")).toBe(true)
+		})
 	})
 
 	describe("setModeConfig", () => {

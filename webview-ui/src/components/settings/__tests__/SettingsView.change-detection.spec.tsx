@@ -508,6 +508,8 @@ describe("SettingsView - Change Detection Fix", () => {
 		fireEvent.click(screen.getByTestId("save-button"))
 		expect(mockPostMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			requestId: expect.any(String),
+			apiConfigurationBaseline: expect.any(Object),
 			text: "default",
 			apiConfiguration: expect.objectContaining({ reasoningEffort: "high" }),
 		})
@@ -560,6 +562,8 @@ describe("SettingsView - Change Detection Fix", () => {
 		fireEvent.click(screen.getByTestId("save-button"))
 		expect(mockPostMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			requestId: expect.any(String),
+			apiConfigurationBaseline: expect.any(Object),
 			text: "default",
 			apiConfiguration: expect.objectContaining({
 				apiProvider: providerIdentifiers.baseten,
@@ -592,12 +596,23 @@ describe("SettingsView - Change Detection Fix", () => {
 		})
 
 		expect(screen.getByTestId("provider-value")).toHaveTextContent("deepseek")
+		const saved = mockPostMessage.mock.calls
+			.map(([message]) => message)
+			.find((message) => message.type === "upsertApiConfiguration")!
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: saved.requestId, success: true },
+			}),
+		)
 
 		mockPostMessage.mockClear()
 		fireEvent.click(screen.getByTestId("save-button"))
 
 		expect(mockPostMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			requestId: expect.any(String),
+			apiConfigurationBaseline: expect.any(Object),
 			text: "default",
 			apiConfiguration: expect.objectContaining({
 				apiProvider: providerIdentifiers.deepseek,

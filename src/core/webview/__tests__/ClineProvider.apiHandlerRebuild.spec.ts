@@ -1,3 +1,4 @@
+import { t } from "../../../i18n"
 import { ProviderSettingsManager } from "../../config/ProviderSettingsManager"
 import { WebviewFocusTracker } from "../WebviewFocusTracker"
 // npx vitest core/webview/__tests__/ClineProvider.apiHandlerRebuild.spec.ts
@@ -6,7 +7,7 @@ import * as vscode from "vscode"
 import { makeCompositeDisposable } from "../../../test-utils/vscode"
 
 import { TelemetryService } from "@roo-code/telemetry"
-import { getModelId, RooCodeEventName } from "@roo-code/types"
+import { getModelId, RooCodeEventName, type ProviderSettings } from "@roo-code/types"
 
 import { ContextProxy } from "../../config/ContextProxy"
 import type { Mode } from "../../../shared/modes"
@@ -242,9 +243,16 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 			new WebviewFocusTracker(),
 		)
 
+		let storedSettings: ProviderSettings = {
+			apiProvider: providerIdentifiers.openrouter,
+			openRouterModelId: "openai/gpt-4",
+		}
 		// Mock providerSettingsManager
 		;(provider as any).providerSettingsManager = {
-			saveConfig: vi.fn().mockResolvedValue("test-id"),
+			saveConfig: vi.fn().mockImplementation(async (_name: string, settings: ProviderSettings) => {
+				storedSettings = settings
+				return "test-id"
+			}),
 			hasConfig: vi.fn().mockResolvedValue(true),
 			deleteConfig: vi.fn(),
 			listConfig: vi.fn().mockResolvedValue([
@@ -263,12 +271,9 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 				apiProvider: providerIdentifiers.openrouter,
 				openRouterModelId: "openai/gpt-4",
 			}),
-			getProfile: vi.fn().mockResolvedValue({
-				name: "test-config",
-				id: "test-id",
-				apiProvider: providerIdentifiers.openrouter,
-				openRouterModelId: "openai/gpt-4",
-			}),
+			getProfile: vi
+				.fn()
+				.mockImplementation(async () => ({ name: "test-config", id: "test-id", ...storedSettings })),
 		}
 
 		// Get the buildApiHandler mock
@@ -486,6 +491,51 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 			)
 		})
 
+		test.each([true, false])("publishes merged settings and model edits (model first: %s)", async (modelFirst) => {
+			const settings = { ...oldSettings, openRouterApiKey: "updated-key" }
+			const edits = modelFirst ? [newSettings, settings] : [settings, newSettings]
+			const task = new Task({ ...defaultTaskOptions, apiConfiguration: oldSettings })
+			await provider.addClineToStack(task)
+			const results = await Promise.all(
+				edits.map((edit) => provider.upsertProviderProfile("existing", edit, true, oldSettings)),
+			)
+			expect(results.every(Boolean)).toBe(true)
+			const expected = { ...newSettings, openRouterApiKey: "updated-key" }
+			expect(await provider.providerSettingsManager.getProfile({ name: "existing" })).toMatchObject(expected)
+			expect(provider.contextProxy.getProviderSettings()).toMatchObject(expected)
+			expect(task.apiConfiguration).toMatchObject(expected)
+		})
+
+		test("rolls back a policy rejection and reports its specific error for an inactive save", async () => {
+			vi.spyOn(provider, "getState").mockResolvedValue({
+				...(await provider.getState()),
+				organizationAllowList: {
+					allowAll: false,
+					providers: {
+						[providerIdentifiers.openrouter]: { allowAll: false, models: [oldSettings.openRouterModelId] },
+					},
+				},
+			})
+			expect(await provider.upsertProviderProfile("existing", newSettings, false, oldSettings)).toBeUndefined()
+			expect(await provider.providerSettingsManager.getProfile({ name: "existing" })).toMatchObject(oldSettings)
+			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+				t("common:errors.violated_organization_allowlist"),
+			)
+		})
+
+		test("compensates a rename and its activation before processing another save", async () => {
+			const before = await provider.providerSettingsManager.getProfile({ name: "existing" })
+			vi.spyOn(provider, "postStateToWebview").mockRejectedValueOnce(new Error("broadcast failed"))
+			expect(
+				await provider.upsertProviderProfile("renamed", newSettings, true, oldSettings, "existing"),
+			).toBeUndefined()
+			expect(await provider.providerSettingsManager.hasConfig("renamed")).toBe(false)
+			expect(await provider.providerSettingsManager.getProfile({ name: "existing" })).toEqual(before)
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("existing")
+			expect(provider.contextProxy.getProviderSettings()).toMatchObject(oldSettings)
+			expect(await provider.upsertProviderProfile("existing", newSettings, true, oldSettings)).toBeTruthy()
+		})
+
 		test.each(["list", "activation", "broadcast"] as const)(
 			"restores existing and removes new profiles after %s failure",
 			async (phase) => {
@@ -535,7 +585,7 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 				await vi.waitFor(() => expect(broadcast).toHaveBeenCalledTimes(1))
 				const upserted = await manager.getProfile({ name })
 
-				// saveApiConfiguration and other direct writers bypass the provider queue.
+				// Non-webview direct manager writers can bypass the provider queue.
 				await manager.saveConfig(name, finalSettings)
 				const metadata = await manager.listConfig()
 				await provider.contextProxy.setValue("listApiConfigMeta", metadata)

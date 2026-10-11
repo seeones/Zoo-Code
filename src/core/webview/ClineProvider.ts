@@ -1896,14 +1896,17 @@ export class ClineProvider
 		name: string,
 		providerSettings: ProviderSettings,
 		activate: boolean = true,
+		baseline?: ProviderSettings,
+		renameFrom?: string,
 	): Promise<string | undefined> {
 		try {
 			return await this.enqueueProviderProfileMutation(async (signal) => {
 				signal.throwIfAborted()
 				// Snapshot and compensate inside the queue so a failed save cannot
 				// overwrite a later successful mutation.
-				const previousProfile = (await this.providerSettingsManager.hasConfig(name))
-					? await this.providerSettingsManager.getProfile({ name })
+				const sourceName = renameFrom ?? name
+				const previousProfile = (await this.providerSettingsManager.hasConfig(sourceName))
+					? await this.providerSettingsManager.getProfile({ name: sourceName })
 					: undefined
 				const previousSettings = this.contextProxy.getProviderSettings()
 				const previousName = this.contextProxy.getValue("currentApiConfigName")
@@ -1916,8 +1919,27 @@ export class ClineProvider
 
 				try {
 					signal.throwIfAborted()
-					const id = await this.providerSettingsManager.saveConfig(name, providerSettings)
+					const id = await this.providerSettingsManager.saveConfig(
+						name,
+						providerSettings,
+						previousProfile,
+						baseline,
+						renameFrom,
+					)
 					savedId = id
+					// Activate and compensate the merged stored profile, including concurrent edits.
+					providerSettings = await this.providerSettingsManager.getProfile({ name })
+					const { organizationAllowList } = await this.getState()
+					if (
+						!ProfileValidator.isProfileAllowed(
+							providerSettings,
+							organizationAllowList ?? ORGANIZATION_ALLOW_ALL,
+						)
+					) {
+						throw new OrganizationAllowListViolationError(
+							t("common:errors.violated_organization_allowlist"),
+						)
+					}
 					signal.throwIfAborted()
 					const listApiConfig = await this.providerSettingsManager.listConfig()
 					await this.updateGlobalState("listApiConfigMeta", listApiConfig)
@@ -1947,10 +1969,16 @@ export class ClineProvider
 						}
 						await restore(() =>
 							previousProfile
-								? this.providerSettingsManager.saveConfig(name, previousProfile, {
-										...providerSettings,
-										id: savedId,
-									})
+								? this.providerSettingsManager.saveConfig(
+										sourceName,
+										previousProfile,
+										{
+											...providerSettings,
+											id: savedId,
+										},
+										undefined,
+										renameFrom ? name : undefined,
+									)
 								: this.providerSettingsManager.deleteConfig(name, { ...providerSettings, id: savedId }),
 						)
 						if (activate && mode) {
@@ -1975,7 +2003,11 @@ export class ClineProvider
 				`Error create new api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
 			)
 
-			vscode.window.showErrorMessage(t("common:errors.create_api_config"))
+			vscode.window.showErrorMessage(
+				error instanceof OrganizationAllowListViolationError
+					? error.message
+					: t("common:errors.create_api_config"),
+			)
 			return undefined
 		}
 	}

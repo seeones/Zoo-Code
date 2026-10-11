@@ -42,6 +42,7 @@ export interface ExtensionMessage {
 		| "enhancedPrompt"
 		| "commitSearchResults"
 		| "listApiConfig"
+		| "apiConfigurationSaved"
 		| typeof RouterModelsMessageType.routerModels
 		| "zooGatewayCredentialsReady"
 		| typeof OpenAiModelsMessageType.openAiModels
@@ -662,6 +663,8 @@ export interface WebviewMessage {
 	dataUri?: string
 	askResponse?: ClineAskResponse
 	apiConfiguration?: ProviderSettings
+	/** Profile when editing began; used to merge edits without overwriting concurrent changes. */
+	apiConfigurationBaseline?: ProviderSettings
 	images?: string[]
 	bool?: boolean
 	value?: number

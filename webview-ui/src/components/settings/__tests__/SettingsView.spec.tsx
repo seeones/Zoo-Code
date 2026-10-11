@@ -447,6 +447,17 @@ describe("SettingsView - Sound Settings", () => {
 			}),
 		)
 
+		const saved = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.map(([message]) => message)
+			.find((message) => message.type === "upsertApiConfiguration")!
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: saved.requestId, success: true },
+			}),
+		)
+
 		// Reset clears the override; it is persisted as null (not undefined).
 		fireEvent.click(within(getSettingsContent()).getByTestId("chat-font-size-reset"))
 		fireEvent.click(screen.getByTestId("save-button"))

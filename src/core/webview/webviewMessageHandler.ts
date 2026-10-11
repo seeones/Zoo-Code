@@ -1,4 +1,4 @@
-import { resolveModelWithAbort } from "../../api/providers/utils/abort-signal"
+import { mergeAbortSignalAndTimeout, resolveModelWithAbort } from "../../api/providers/utils/abort-signal"
 import { safeWriteJson } from "../../utils/safeWriteJson"
 import * as path from "path"
 import * as os from "os"
@@ -131,6 +131,21 @@ const discoverVsCodeLmModels = () => {
 		pendingVsCodeLmModels = undefined
 	})
 	return pendingVsCodeLmModels
+}
+
+const pendingLmStudioPreviews = new Map<string, Promise<ModelRecord>>()
+const discoverLmStudioPreview = (baseUrl: string) => {
+	const key = baseUrl || "http://localhost:1234"
+	let pending = pendingLmStudioPreviews.get(key)
+	if (!pending) {
+		// Bound the cancellable HTTP probe. SDK discovery must remain registered until
+		// it actually settles, even when every timed-out waiter has detached.
+		pending = getLMStudioModels(key, { signal: AbortSignal.timeout(15_000) }).finally(() =>
+			pendingLmStudioPreviews.delete(key),
+		)
+		pendingLmStudioPreviews.set(key, pending)
+	}
+	return pending
 }
 
 export const webviewMessageHandler = async (
@@ -1501,9 +1516,10 @@ const handleWebviewMessage = async (
 				const hasPreviewBaseUrl = typeof requestedBaseUrl === "string"
 				if (hasPreviewBaseUrl) {
 					modelRequestSignal?.throwIfAborted()
-					lmStudioModels = await getLMStudioModels(
-						requestedBaseUrl,
-						...(modelRequestSignal ? [{ signal: modelRequestSignal }] : []),
+					lmStudioModels = await resolveModelWithAbort(
+						() => discoverLmStudioPreview(requestedBaseUrl),
+						mergeAbortSignalAndTimeout(modelRequestSignal, 15_000),
+						"LM Studio",
 					)
 				} else {
 					const lmStudioOptions = {
@@ -2387,9 +2403,12 @@ const handleWebviewMessage = async (
 							t("common:errors.violated_organization_allowlist"),
 						)
 					}
-					await provider.providerSettingsManager.saveConfig(message.text, message.apiConfiguration)
-					const listApiConfig = await provider.providerSettingsManager.listConfig()
-					await updateGlobalState("listApiConfigMeta", listApiConfig)
+					await provider.upsertProviderProfile(
+						message.text,
+						message.apiConfiguration,
+						false,
+						message.apiConfigurationBaseline,
+					)
 				} catch (error) {
 					provider.log(
 						`Error save api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
@@ -2404,6 +2423,7 @@ const handleWebviewMessage = async (
 			break
 		case "upsertApiConfiguration":
 			if (message.text && message.apiConfiguration) {
+				let success = false
 				try {
 					// Enforce the organization allowlist at the persistence
 					// boundary, not only in the webview, so a crafted or stale
@@ -2419,7 +2439,13 @@ const handleWebviewMessage = async (
 							t("common:errors.violated_organization_allowlist"),
 						)
 					}
-					await provider.upsertProviderProfile(message.text, message.apiConfiguration)
+					const savedId = await provider.upsertProviderProfile(
+						message.text,
+						message.apiConfiguration,
+						true,
+						message.apiConfigurationBaseline,
+					)
+					success = savedId !== undefined
 				} catch (error) {
 					provider.log(
 						`Error upsert api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
@@ -2429,15 +2455,31 @@ const handleWebviewMessage = async (
 							? error.message
 							: t("common:errors.save_api_config"),
 					)
+				} finally {
+					if (message.requestId) {
+						await provider.postMessageToWebview({
+							type: "apiConfigurationSaved",
+							requestId: message.requestId,
+							success,
+						})
+					}
 				}
+			} else if (message.requestId) {
+				await provider.postMessageToWebview({
+					type: "apiConfigurationSaved",
+					requestId: message.requestId,
+					success: false,
+				})
 			}
 			break
 		case "renameApiConfiguration":
 			if (message.values && message.apiConfiguration) {
+				let success = false
 				try {
 					const { oldName, newName } = message.values
 
 					if (oldName === newName) {
+						success = true
 						break
 					}
 
@@ -2453,18 +2495,14 @@ const handleWebviewMessage = async (
 						)
 					}
 
-					// Load the old configuration to get its ID.
-					const { id } = await provider.providerSettingsManager.getProfile({ name: oldName })
-
-					// Create a new configuration with the new name and old ID.
-					await provider.providerSettingsManager.saveConfig(newName, { ...message.apiConfiguration, id })
-
-					// Delete the old configuration.
-					await provider.providerSettingsManager.deleteConfig(oldName)
-
-					// Re-activate to update the global settings related to the
-					// currently activated provider profile.
-					await provider.activateProviderProfile({ name: newName })
+					const savedId = await provider.upsertProviderProfile(
+						newName,
+						message.apiConfiguration,
+						true,
+						message.apiConfigurationBaseline,
+						oldName,
+					)
+					success = savedId !== undefined
 				} catch (error) {
 					provider.log(
 						`Error rename api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
@@ -2475,7 +2513,21 @@ const handleWebviewMessage = async (
 							? error.message
 							: t("common:errors.rename_api_config"),
 					)
+				} finally {
+					if (message.requestId) {
+						await provider.postMessageToWebview({
+							type: "apiConfigurationSaved",
+							requestId: message.requestId,
+							success,
+						})
+					}
 				}
+			} else if (message.requestId) {
+				await provider.postMessageToWebview({
+					type: "apiConfigurationSaved",
+					requestId: message.requestId,
+					success: false,
+				})
 			}
 			break
 		case "loadApiConfiguration":

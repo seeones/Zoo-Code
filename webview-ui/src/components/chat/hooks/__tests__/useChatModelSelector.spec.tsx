@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 import {
 	anthropicDefaultModelId,
+	openRouterDefaultModelId,
 	zooGatewayDefaultModelId,
 	opencodeGoDefaultModelId,
 	kenariDefaultModelId,
@@ -118,6 +119,15 @@ describe("useChatModelSelector", () => {
 				requestId: messages[2].requestId,
 			})
 		})
+	})
+
+	it("defaults an unset provider to OpenRouter and configures its catalog query", () => {
+		mockUseExtensionState.mockReturnValue({ apiConfiguration: {} })
+		const { result } = renderHook(() => useChatModelSelector(), { wrapper })
+		expect(result.current.provider).toBe(providerIdentifiers.openrouter)
+		expect(result.current.modelIdKey).toBe("openRouterModelId")
+		expect(result.current.defaultModelId).toBe(openRouterDefaultModelId)
+		expect(mockUseRouterModels).toHaveBeenCalledWith({ provider: providerIdentifiers.openrouter, enabled: true })
 	})
 
 	describe("static providers", () => {

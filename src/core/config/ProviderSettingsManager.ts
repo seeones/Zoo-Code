@@ -4,6 +4,7 @@ import deepEqual from "fast-deep-equal"
 
 import {
 	type ProviderSettingsWithId,
+	type ProviderSettings,
 	providerSettingsWithIdSchema,
 	discriminatedProviderSettingsWithIdSchema,
 	isSecretStateKey,
@@ -407,21 +408,58 @@ export class ProviderSettingsManager {
 	 * Save a config with the given name.
 	 * Preserves the ID from the input 'config' object if it exists,
 	 * otherwise generates a new one (for creation scenarios).
+	 * A baseline applies only fields edited by the caller, rejecting overlapping edits.
+	 * Renames update both names in one stored write under the same lock.
 	 */
 	public async saveConfig(
 		name: string,
 		config: ProviderSettingsWithId,
 		expected?: ProviderSettingsWithId,
+		baseline?: ProviderSettings,
+		renameFrom?: string,
 	): Promise<string> {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
-				this.assertConfigUnchanged(providerProfiles, name, expected)
+				const sourceName = renameFrom ?? name
+				this.assertConfigUnchanged(providerProfiles, sourceName, expected)
+				if (renameFrom && (!providerProfiles.apiConfigs[renameFrom] || providerProfiles.apiConfigs[name])) {
+					throw new ProviderProfileConflictError(name)
+				}
 				// Preserve the existing ID if this is an update to an existing config.
-				const existingId = providerProfiles.apiConfigs[name]?.id
+				const existingId = providerProfiles.apiConfigs[sourceName]?.id
 				const id = config.id || existingId || this.generateId()
-				const filteredConfig = this.normalizeConfig(config)
+				let filteredConfig = this.normalizeConfig(config)
+				if (baseline && providerProfiles.apiConfigs[sourceName]) {
+					const current = providerProfiles.apiConfigs[sourceName]
+					const original = this.normalizeConfig(baseline)
+					if (
+						current.apiProvider !== original.apiProvider &&
+						current.apiProvider !== filteredConfig.apiProvider
+					) {
+						throw new ProviderProfileConflictError(sourceName)
+					}
+					const merged = { ...current }
+					for (const key of new Set([...Object.keys(original), ...Object.keys(filteredConfig)])) {
+						if (key === "id") continue
+						const field = key as keyof ProviderSettings
+						if (deepEqual(original[field], filteredConfig[field])) continue
+						if (
+							!deepEqual(current[field], original[field]) &&
+							!deepEqual(current[field], filteredConfig[field])
+						) {
+							throw new ProviderProfileConflictError(name)
+						}
+						Object.assign(merged, { [field]: filteredConfig[field] })
+					}
+					filteredConfig = this.normalizeConfig(merged)
+				}
 				providerProfiles.apiConfigs[name] = { ...filteredConfig, id }
+				if (renameFrom) {
+					delete providerProfiles.apiConfigs[renameFrom]
+					if (providerProfiles.currentApiConfigName === renameFrom)
+						providerProfiles.currentApiConfigName = name
+				}
 				await this.store(providerProfiles)
 				return id
 			})

@@ -1,11 +1,16 @@
 import type { ReactNode } from "react"
 import userEvent from "@testing-library/user-event"
 import { render, screen, fireEvent } from "@/utils/test-utils"
-import { providerIdentifiers } from "@roo-code/types"
+import { isModelAllowedForOrganization, providerIdentifiers } from "@roo-code/types"
 import { vscode } from "@/utils/vscode"
 
 import { ChatModelSelector } from "../ChatModelSelector"
 import { useChatModelSelector } from "../hooks/useChatModelSelector"
+
+vi.mock("@roo-code/types", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@roo-code/types")>()
+	return { ...actual, isModelAllowedForOrganization: vi.fn(actual.isModelAllowedForOrganization) }
+})
 
 // Mock the dependencies
 vi.mock("@/utils/vscode", () => ({
@@ -232,6 +237,7 @@ describe("ChatModelSelector", () => {
 		await user.click(screen.getByTestId("chat-model-option-copilot/gpt-4o"))
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			apiConfigurationBaseline: mockUseExtensionState().apiConfiguration,
 			text: "default",
 			apiConfiguration: {
 				apiProvider: providerIdentifiers.vscodeLm,
@@ -251,6 +257,7 @@ describe("ChatModelSelector", () => {
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			apiConfigurationBaseline: mockUseExtensionState().apiConfiguration,
 			text: "default",
 			apiConfiguration: {
 				apiProvider: providerIdentifiers.anthropic,
@@ -274,6 +281,7 @@ describe("ChatModelSelector", () => {
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "upsertApiConfiguration",
+			apiConfigurationBaseline: mockUseExtensionState().apiConfiguration,
 			text: "default",
 			apiConfiguration: {
 				apiProvider: providerIdentifiers.anthropic,
@@ -457,6 +465,14 @@ describe("ChatModelSelector", () => {
 
 		// The provider is narrowed to an allow-list, so free-form ids are not offered.
 		expect(screen.queryByTestId("chat-model-use-custom")).not.toBeInTheDocument()
+	})
+
+	test("rejects a rendered selection when the policy check denies it", () => {
+		render(<ChatModelSelector {...defaultProps} />)
+		fireEvent.click(screen.getByTestId("chat-model-selector-trigger"))
+		vi.mocked(isModelAllowedForOrganization).mockReturnValueOnce(false)
+		fireEvent.click(screen.getByTestId("chat-model-option-claude-sonnet-4-20250514"))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "upsertApiConfiguration" }))
 	})
 
 	test("filters out models that the organization policy disallows", () => {

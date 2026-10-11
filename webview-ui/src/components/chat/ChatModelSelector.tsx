@@ -96,6 +96,7 @@ export const ChatModelSelector = ({ disabled = false, title, triggerClassName = 
 			vscode.postMessage({
 				type: "upsertApiConfiguration",
 				text: currentApiConfigName,
+				apiConfigurationBaseline: apiConfiguration,
 				apiConfiguration: {
 					...apiConfiguration,
 					[modelIdKey]: valueToStore,

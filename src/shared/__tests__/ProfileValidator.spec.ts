@@ -311,6 +311,23 @@ describe("ProfileValidator", () => {
 			expect(ProfileValidator.isProfileAllowed(profile, allowList)).toBe(true)
 		})
 
+		it.each([undefined, {}, { vendor: "copilot" }, { family: "gpt-4" }])(
+			"rejects incomplete VS Code LM selector %j",
+			(vsCodeLmModelSelector) => {
+				expect(
+					ProfileValidator.isProfileAllowed(
+						{ apiProvider: providerIdentifiers.vscodeLm, vsCodeLmModelSelector },
+						{
+							allowAll: false,
+							providers: {
+								[providerIdentifiers.vscodeLm]: { allowAll: false, models: ["copilot/gpt-4"] },
+							},
+						},
+					),
+				).toBe(false)
+			},
+		)
+
 		it("should extract lmStudioModelId for lmstudio provider", () => {
 			const allowList: OrganizationAllowList = {
 				allowAll: false,
