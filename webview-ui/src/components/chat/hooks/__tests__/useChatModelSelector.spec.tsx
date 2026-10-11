@@ -236,6 +236,35 @@ describe("useChatModelSelector", () => {
 			)
 		})
 
+		it.each(["openAiBaseUrl", "openAiApiKey"] as const)(
+			"clears loaded models and suppresses requests when %s is removed",
+			(missingField) => {
+				const config = {
+					apiProvider: providerIdentifiers.openai,
+					openAiBaseUrl: "https://api.example.com/v1",
+					openAiApiKey: "test-key",
+				}
+				mockUseExtensionState.mockReturnValue({ apiConfiguration: config })
+				const { result, rerender } = renderHook(() => useChatModelSelector(), { wrapper })
+				const requestId = mockPostMessage.mock.calls[0][0].requestId
+				act(() => emitMessage({ type: "openAiModels", openAiModels: ["gpt-4o"], requestId }))
+				expect(Object.keys(result.current.models!)).toEqual(["gpt-4o"])
+
+				mockPostMessage.mockClear()
+				mockUseExtensionState.mockReturnValue({ apiConfiguration: { ...config, [missingField]: undefined } })
+				rerender()
+
+				expect(mockPostMessage.mock.calls.map(([message]) => message)).toEqual([
+					{ type: "cancelModelRequest", requestId },
+				])
+				expect(result.current.models).toBeNull()
+				expect(result.current.isLoading).toBe(false)
+				act(() => emitMessage({ type: "openAiModels", openAiModels: ["stale-model"], requestId }))
+				expect(result.current.models).toBeNull()
+				expect(result.current.isLoading).toBe(false)
+			},
+		)
+
 		it("only requests again when serialized header values change", () => {
 			const configure = (headers?: Record<string, string>) =>
 				mockUseExtensionState.mockReturnValue({

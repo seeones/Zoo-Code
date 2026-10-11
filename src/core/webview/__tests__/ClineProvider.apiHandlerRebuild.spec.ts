@@ -516,6 +516,44 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 			},
 		)
 
+		test.each(["existing", "new-profile"])(
+			"preserves a concurrent settings save for %s when upsert fails",
+			async (name) => {
+				const manager = provider.providerSettingsManager
+				const finalSettings = { ...oldSettings, openRouterModelId: "concurrent-model" }
+				const task = new Task({ ...defaultTaskOptions, apiConfiguration: oldSettings })
+				await provider.addClineToStack(task)
+				let failBroadcast!: (reason: Error) => void
+				const broadcast = vi.spyOn(provider, "postStateToWebview").mockImplementationOnce(
+					() =>
+						new Promise<void>((_resolve, reject) => {
+							failBroadcast = reject
+						}),
+				)
+				const log = vi.spyOn(provider, "log")
+				const pending = provider.upsertProviderProfile(name, newSettings)
+				await vi.waitFor(() => expect(broadcast).toHaveBeenCalledTimes(1))
+				const upserted = await manager.getProfile({ name })
+
+				// saveApiConfiguration and other direct writers bypass the provider queue.
+				await manager.saveConfig(name, finalSettings)
+				const metadata = await manager.listConfig()
+				await provider.contextProxy.setValue("listApiConfigMeta", metadata)
+				failBroadcast(new Error("broadcast failed"))
+				expect(await pending).toBeUndefined()
+
+				const reloaded = new ProviderSettingsManager(mockContext)
+				expect(await reloaded.getProfile({ name })).toMatchObject({ ...finalSettings, id: upserted.id })
+				expect(provider.contextProxy.getValue("listApiConfigMeta")).toEqual(metadata)
+				expect(await reloaded.getModeConfigId("code")).toBeUndefined()
+				expect(provider.contextProxy.getProviderSettings()).toMatchObject(oldSettings)
+				expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("existing")
+				expect(task.apiConfiguration).toEqual(oldSettings)
+				expect(broadcast).toHaveBeenCalledTimes(2)
+				expect(log).toHaveBeenCalledWith(expect.stringContaining("rollback was skipped"))
+			},
+		)
+
 		test("holds later model updates until a timed-out save finishes compensation", async () => {
 			vi.useFakeTimers()
 			try {
@@ -532,11 +570,11 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 				const saves = vi
 					.spyOn(manager, "saveConfig")
 					.mockImplementationOnce(save)
-					.mockImplementationOnce(async (name, settings) => {
+					.mockImplementationOnce(async (name, settings, expected) => {
 						await new Promise<void>((resolve) => {
 							releaseRollback = resolve
 						})
-						return save(name, settings)
+						return save(name, settings, expected)
 					})
 				const first = provider.upsertProviderProfile("existing", newSettings)
 				await vi.advanceTimersByTimeAsync(0)
@@ -579,11 +617,11 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 			let releaseRollback!: () => void
 			vi.spyOn(manager, "saveConfig")
 				.mockImplementationOnce(save)
-				.mockImplementationOnce(async (name, settings) => {
+				.mockImplementationOnce(async (name, settings, expected) => {
 					await new Promise<void>((resolve) => {
 						releaseRollback = resolve
 					})
-					return save(name, settings)
+					return save(name, settings, expected)
 				})
 			vi.spyOn(provider, "postStateToWebview").mockRejectedValueOnce(new Error("broadcast failed"))
 			const first = provider.upsertProviderProfile("existing", newSettings)

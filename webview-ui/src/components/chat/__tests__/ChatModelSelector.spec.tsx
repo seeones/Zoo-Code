@@ -143,6 +143,40 @@ describe("ChatModelSelector", () => {
 		expect(screen.getByTestId("chat-model-option-claude-sonnet-4-20250514")).toBeInTheDocument()
 	})
 
+	test("hides deprecated models while retaining the persisted deprecated selection", () => {
+		mockUseChatModelSelector.mockReturnValue(
+			createSelectorState({
+				models: {
+					...anthropicModels,
+					"claude-opus-4-20250514": { ...anthropicModels["claude-opus-4-20250514"], deprecated: true },
+					"retired-model": { ...anthropicModels["claude-sonnet-4-20250514"], deprecated: true },
+				},
+			}),
+		)
+		render(<ChatModelSelector {...defaultProps} />)
+		fireEvent.click(screen.getByTestId("chat-model-selector-trigger"))
+
+		expect(screen.queryByTestId("chat-model-option-retired-model")).not.toBeInTheDocument()
+		expect(screen.getByTestId("chat-model-option-claude-opus-4-20250514")).toBeInTheDocument()
+		expect(screen.getByTestId("chat-model-option-claude-sonnet-4-20250514")).toBeInTheDocument()
+	})
+
+	test.each(["ArrowDown", "ArrowUp", "Enter"])("ignores %s while composing text", async (key) => {
+		const user = userEvent.setup()
+		render(<ChatModelSelector {...defaultProps} />)
+		await user.click(screen.getByTestId("chat-model-selector-trigger"))
+		const search = screen.getByRole("textbox")
+		expect(search).toHaveFocus()
+
+		fireEvent.keyDown(search, { key, isComposing: true })
+
+		expect(search).toHaveFocus()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		// Normal navigation still works after composition ends.
+		await user.keyboard("{ArrowDown}{Enter}")
+		expect(vscode.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "upsertApiConfiguration" }))
+	})
+
 	test("shows the empty catalog message once loading finishes", async () => {
 		const user = userEvent.setup()
 		mockUseChatModelSelector.mockReturnValue({

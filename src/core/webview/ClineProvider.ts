@@ -110,7 +110,7 @@ import { buildApiHandler } from "../../api"
 import { forceFullModelDetailsLoad, hasLoadedFullDetails } from "../../api/providers/fetchers/lmstudio"
 
 import { ContextProxy } from "../config/ContextProxy"
-import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
+import { ProviderProfileConflictError, ProviderSettingsManager } from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { PendingActionSettlementError, Task } from "../task/Task"
 
@@ -1912,12 +1912,12 @@ export class ClineProvider
 				const previousTaskSettings = task?.apiConfiguration
 				const mode = activate ? (await this.getState()).mode : undefined
 				const previousModeConfigId = mode ? await this.providerSettingsManager.getModeConfigId(mode) : undefined
-				let saved = false
+				let savedId: string | undefined
 
 				try {
 					signal.throwIfAborted()
 					const id = await this.providerSettingsManager.saveConfig(name, providerSettings)
-					saved = true
+					savedId = id
 					signal.throwIfAborted()
 					const listApiConfig = await this.providerSettingsManager.listConfig()
 					await this.updateGlobalState("listApiConfigMeta", listApiConfig)
@@ -1934,19 +1934,24 @@ export class ClineProvider
 					if (activate) await this.persistStickyProviderProfileToCurrentTask(name)
 					return id
 				} catch (error) {
-					if (saved) {
+					if (savedId) {
 						// Attempt every compensation even if an individual store is unavailable.
+						let profileConflict = false
 						const restore = async (write: () => unknown | Promise<unknown>) => {
 							try {
 								await write()
 							} catch (rollbackError) {
 								this.log(`Failed to roll back provider profile state: ${String(rollbackError)}`)
+								if (rollbackError instanceof ProviderProfileConflictError) profileConflict = true
 							}
 						}
 						await restore(() =>
 							previousProfile
-								? this.providerSettingsManager.saveConfig(name, previousProfile)
-								: this.providerSettingsManager.deleteConfig(name),
+								? this.providerSettingsManager.saveConfig(name, previousProfile, {
+										...providerSettings,
+										id: savedId,
+									})
+								: this.providerSettingsManager.deleteConfig(name, { ...providerSettings, id: savedId }),
 						)
 						if (activate && mode) {
 							await restore(() => this.providerSettingsManager.setModeConfig(mode, previousModeConfigId))
@@ -1956,7 +1961,10 @@ export class ClineProvider
 								await restore(() => task.updateApiConfiguration(previousTaskSettings))
 							}
 						}
-						await restore(() => this.updateGlobalState("listApiConfigMeta", previousMeta))
+						// A direct settings save may have published newer profile metadata.
+						if (!profileConflict) {
+							await restore(() => this.updateGlobalState("listApiConfigMeta", previousMeta))
+						}
 						await restore(() => this.postStateToWebview())
 					}
 					throw error

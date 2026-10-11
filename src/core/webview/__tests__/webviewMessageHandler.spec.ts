@@ -2585,22 +2585,73 @@ describe("model request correlation and cancellation", () => {
 		},
 	)
 
-	it("settles cancelled VS Code discovery even when the native API is still pending", async () => {
-		let finish!: (models: Awaited<ReturnType<typeof getVsCodeLmModels>>) => void
-		vi.mocked(getVsCodeLmModels).mockImplementationOnce(
-			() =>
-				new Promise((resolve) => {
-					finish = resolve
-				}),
-		)
-		const pending = webviewMessageHandler(mockClineProvider, {
+	it.each(["cancel", "dispose"])(
+		"shares pending VS Code discovery after %s and refreshes after settlement",
+		async (action) => {
+			let finish!: (models: Awaited<ReturnType<typeof getVsCodeLmModels>>) => void
+			vi.mocked(getVsCodeLmModels).mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finish = resolve
+					}),
+			)
+			const pending = webviewMessageHandler(mockClineProvider, {
+				type: "requestVsCodeLmModels",
+				requestId: "cancel-vscode",
+			})
+			if (action === "cancel") {
+				await webviewMessageHandler(mockClineProvider, {
+					type: "cancelModelRequest",
+					requestId: "cancel-vscode",
+				})
+			} else {
+				mockClineProvider.modelRequests.dispose()
+				Object.defineProperty(mockClineProvider, "modelRequests", {
+					value: new ModelRequestRegistry(),
+					configurable: true,
+				})
+			}
+			await pending
+			expect(mockClineProvider.postMessageToWebview).not.toHaveBeenCalled()
+			const restarted = webviewMessageHandler(mockClineProvider, {
+				type: "requestVsCodeLmModels",
+				requestId: "restarted-vscode",
+			})
+			const sibling = webviewMessageHandler(mockClineProvider, {
+				type: "requestVsCodeLmModels",
+				requestId: "sibling-vscode",
+			})
+			await webviewMessageHandler(mockClineProvider, { type: "cancelModelRequest", requestId: "sibling-vscode" })
+			await sibling
+			expect(getVsCodeLmModels).toHaveBeenCalledTimes(1)
+			finish([])
+			await restarted
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "vsCodeLmModels",
+				requestId: "restarted-vscode",
+				vsCodeLmModels: [],
+			})
+			await webviewMessageHandler(mockClineProvider, { type: "requestVsCodeLmModels", requestId: "fresh-vscode" })
+			expect(getVsCodeLmModels).toHaveBeenCalledTimes(2)
+		},
+	)
+
+	it("allows VS Code discovery to retry after a shared failure", async () => {
+		vi.mocked(getVsCodeLmModels).mockRejectedValueOnce(new Error("discovery failed"))
+		const first = webviewMessageHandler(mockClineProvider, {
 			type: "requestVsCodeLmModels",
-			requestId: "cancel-vscode",
+			requestId: "failed-first",
 		})
-		await webviewMessageHandler(mockClineProvider, { type: "cancelModelRequest", requestId: "cancel-vscode" })
-		await pending
-		finish([])
+		const second = webviewMessageHandler(mockClineProvider, {
+			type: "requestVsCodeLmModels",
+			requestId: "failed-second",
+		})
+		await expect(first).rejects.toThrow("discovery failed")
+		await expect(second).rejects.toThrow("discovery failed")
+		expect(getVsCodeLmModels).toHaveBeenCalledTimes(1)
 		expect(mockClineProvider.postMessageToWebview).not.toHaveBeenCalled()
+		await webviewMessageHandler(mockClineProvider, { type: "requestVsCodeLmModels", requestId: "retry" })
+		expect(getVsCodeLmModels).toHaveBeenCalledTimes(2)
 	})
 
 	it("aborts OpenAI HTTP work and suppresses its late response", async () => {

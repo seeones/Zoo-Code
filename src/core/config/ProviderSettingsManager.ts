@@ -52,6 +52,12 @@ export const providerProfilesSchema = z.object({
 
 export type ProviderProfiles = z.infer<typeof providerProfilesSchema>
 
+export class ProviderProfileConflictError extends Error {
+	constructor(name: string) {
+		super(`Provider profile '${name}' changed during update; rollback was skipped`)
+	}
+}
+
 export class ProviderSettingsManager {
 	private static readonly SCOPE_PREFIX = "roo_cline_config_"
 	private readonly defaultConfigId = this.generateId()
@@ -374,34 +380,53 @@ export class ProviderSettingsManager {
 		}
 	}
 
+	private normalizeConfig(config: ProviderSettingsWithId): ProviderSettingsWithId {
+		const normalizedConfig = downgradeLegacyRooConfig(config as Record<string, unknown>)
+			.config as ProviderSettingsWithId
+
+		// For active providers, filter out settings from other providers.
+		// For retired providers, preserve full profile fields (including legacy
+		// provider-specific keys) to avoid data loss — passthrough() keeps
+		// unknown keys that strict parse() would strip.
+		return typeof normalizedConfig.apiProvider === "string" && isRetiredProvider(normalizedConfig.apiProvider)
+			? providerSettingsWithIdSchema.passthrough().parse(normalizedConfig)
+			: discriminatedProviderSettingsWithIdSchema.parse(normalizedConfig)
+	}
+
+	private assertConfigUnchanged(profiles: ProviderProfiles, name: string, expected?: ProviderSettingsWithId) {
+		// Match the JSON representation written to storage (undefined fields are omitted).
+		if (
+			expected &&
+			!deepEqual(profiles.apiConfigs[name], JSON.parse(JSON.stringify(this.normalizeConfig(expected))))
+		) {
+			throw new ProviderProfileConflictError(name)
+		}
+	}
+
 	/**
 	 * Save a config with the given name.
 	 * Preserves the ID from the input 'config' object if it exists,
 	 * otherwise generates a new one (for creation scenarios).
 	 */
-	public async saveConfig(name: string, config: ProviderSettingsWithId): Promise<string> {
+	public async saveConfig(
+		name: string,
+		config: ProviderSettingsWithId,
+		expected?: ProviderSettingsWithId,
+	): Promise<string> {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
+				this.assertConfigUnchanged(providerProfiles, name, expected)
 				// Preserve the existing ID if this is an update to an existing config.
 				const existingId = providerProfiles.apiConfigs[name]?.id
 				const id = config.id || existingId || this.generateId()
-				const normalizedConfig = downgradeLegacyRooConfig(config as Record<string, unknown>)
-					.config as ProviderSettingsWithId
-
-				// For active providers, filter out settings from other providers.
-				// For retired providers, preserve full profile fields (including legacy
-				// provider-specific keys) to avoid data loss — passthrough() keeps
-				// unknown keys that strict parse() would strip.
-				const filteredConfig =
-					typeof normalizedConfig.apiProvider === "string" && isRetiredProvider(normalizedConfig.apiProvider)
-						? providerSettingsWithIdSchema.passthrough().parse(normalizedConfig)
-						: discriminatedProviderSettingsWithIdSchema.parse(normalizedConfig)
+				const filteredConfig = this.normalizeConfig(config)
 				providerProfiles.apiConfigs[name] = { ...filteredConfig, id }
 				await this.store(providerProfiles)
 				return id
 			})
 		} catch (error) {
+			if (error instanceof ProviderProfileConflictError) throw error
 			throw new Error(`Failed to save config: ${error}`)
 		}
 	}
@@ -468,10 +493,11 @@ export class ProviderSettingsManager {
 	/**
 	 * Delete a config by name.
 	 */
-	public async deleteConfig(name: string) {
+	public async deleteConfig(name: string, expected?: ProviderSettingsWithId) {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
+				this.assertConfigUnchanged(providerProfiles, name, expected)
 
 				if (!providerProfiles.apiConfigs[name]) {
 					throw new Error(`Config '${name}' not found`)
@@ -485,6 +511,7 @@ export class ProviderSettingsManager {
 				await this.store(providerProfiles)
 			})
 		} catch (error) {
+			if (error instanceof ProviderProfileConflictError) throw error
 			throw new Error(`Failed to delete config: ${error}`)
 		}
 	}

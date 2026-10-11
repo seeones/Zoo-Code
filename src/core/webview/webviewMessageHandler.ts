@@ -123,6 +123,16 @@ import {
 	handleCheckoutBranch,
 } from "./worktree"
 
+// Native discovery has no cancellation token. Keep it shared across request IDs
+// and provider instances until it settles; cancellation only detaches a waiter.
+let pendingVsCodeLmModels: ReturnType<typeof getVsCodeLmModels> | undefined
+const discoverVsCodeLmModels = () => {
+	pendingVsCodeLmModels ??= getVsCodeLmModels().finally(() => {
+		pendingVsCodeLmModels = undefined
+	})
+	return pendingVsCodeLmModels
+}
+
 export const webviewMessageHandler = async (
 	provider: ClineProvider,
 	message: WebviewMessage,
@@ -1545,9 +1555,9 @@ const handleWebviewMessage = async (
 			}
 
 			break
-		case VsCodeLmModelsMessageType.requestVsCodeLmModels:
+		case VsCodeLmModelsMessageType.requestVsCodeLmModels: {
 			modelRequestSignal?.throwIfAborted()
-			const vsCodeLmModels = await resolveModelWithAbort(getVsCodeLmModels, modelRequestSignal, "VS Code LM")
+			const vsCodeLmModels = await resolveModelWithAbort(discoverVsCodeLmModels, modelRequestSignal, "VS Code LM")
 			// TODO: Cache like we do for OpenRouter, etc?
 			modelRequestSignal?.throwIfAborted()
 			await provider.postMessageToWebview({
@@ -1556,6 +1566,7 @@ const handleWebviewMessage = async (
 				requestId: message.requestId,
 			})
 			break
+		}
 		case "openImage":
 			await openImage(message.text!, { values: message.values })
 			break
