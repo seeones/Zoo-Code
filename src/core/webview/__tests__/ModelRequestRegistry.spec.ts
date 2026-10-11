@@ -44,6 +44,27 @@ it("aborts a replaced request and keeps its replacement registered after late co
 	await second
 })
 
+it("swallows abort-triggered rejections on replacement and explicit cancellation", async () => {
+	const registry = new ModelRequestRegistry()
+	const signals: AbortSignal[] = []
+	const fetch = (signal: AbortSignal) =>
+		new Promise<void>((_resolve, reject) => {
+			signals.push(signal)
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+		})
+	const first = registry.run("same-id", fetch)
+	const firstResolved = expect(first).resolves.toBeUndefined()
+	const second = registry.run("same-id", fetch)
+	const secondResolved = expect(second).resolves.toBeUndefined()
+
+	await firstResolved
+	expect(signals[0].aborted).toBe(true)
+	expect(signals[1].aborted).toBe(false)
+	registry.cancel("same-id")
+	expect(signals[1].aborted).toBe(true)
+	await secondResolved
+})
+
 it("propagates errors from requests that were not aborted", async () => {
 	const registry = new ModelRequestRegistry()
 	const failure = new Error("model discovery failed")

@@ -17,6 +17,21 @@ describe("router request cleanup", () => {
 		vi.restoreAllMocks()
 	})
 
+	it("rejects an already-aborted signal without starting any work", async () => {
+		const add = vi.spyOn(window, "addEventListener")
+		const timeout = vi.spyOn(globalThis, "setTimeout")
+		const controller = new AbortController()
+		const reason = new Error("Model request already cancelled")
+		controller.abort(reason)
+
+		await expect(fetchRouterModels(providerIdentifiers.openrouter, controller.signal)).rejects.toBe(reason)
+
+		expect(add).not.toHaveBeenCalled()
+		expect(timeout).not.toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
 	it("removes its listener and timer and cancels backend work on abort", async () => {
 		const add = vi.spyOn(window, "addEventListener")
 		const remove = vi.spyOn(window, "removeEventListener")
