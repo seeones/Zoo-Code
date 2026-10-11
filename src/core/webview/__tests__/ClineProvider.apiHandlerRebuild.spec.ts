@@ -589,8 +589,10 @@ describe("ClineProvider - API Handler Rebuild Guard", () => {
 			const first = provider.upsertProviderProfile("existing", newSettings)
 			await vi.waitFor(() => expect(manager.saveConfig).toHaveBeenCalledTimes(2))
 			const finalSettings = { ...oldSettings, openRouterModelId: "final-model" }
+			const hasConfig = vi.spyOn(manager, "hasConfig")
 			const second = provider.upsertProviderProfile("existing", finalSettings)
-			await Promise.resolve()
+			await new Promise<void>((resolve) => setTimeout(resolve, 0))
+			expect(hasConfig).not.toHaveBeenCalled()
 			expect(manager.saveConfig).toHaveBeenCalledTimes(2)
 			releaseRollback()
 			expect(await first).toBeUndefined()
