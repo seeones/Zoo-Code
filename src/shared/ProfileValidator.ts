@@ -69,9 +69,17 @@ export class ProfileValidator {
 				return profile.litellmModelId
 			case providerIdentifiers.lmstudio:
 				return profile.lmStudioModelId
-			case providerIdentifiers.vscodeLm:
-				// We probably need something more flexible for this one, if we need to really support it here.
-				return profile.vsCodeLmModelSelector?.id
+			case providerIdentifiers.vscodeLm: {
+				// The webview's model selector validates and stores the compound `vendor/family`
+				// identity when no explicit `id` is set, so the validator must extract the same
+				// value; otherwise a restrictive allowlist entry keyed on `vendor/family` would
+				// never match the stored selection.
+				const selector = profile.vsCodeLmModelSelector
+				return (
+					selector?.id ??
+					(selector?.vendor && selector?.family ? `${selector.vendor}/${selector.family}` : undefined)
+				)
+			}
 			case providerIdentifiers.openrouter:
 				return profile.openRouterModelId
 			case providerIdentifiers.ollama:

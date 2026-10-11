@@ -416,9 +416,7 @@ function dedupedFetch(cacheKey: string, options: GetModelsOptions): Promise<Mode
 
 	const controller = new AbortController()
 	const timeoutSignal = AbortSignal.timeout(MODEL_CATALOG_FETCH_TIMEOUT_MS)
-	const onTimeout = () => controller.abort(timeoutSignal.reason)
-	timeoutSignal.addEventListener("abort", onTimeout, { once: true })
-	const removeTimeoutListener = () => timeoutSignal.removeEventListener("abort", onTimeout)
+	let removeTimeoutListener = () => {}
 
 	// Settlement and a last-waiter abort may happen in either order; both paths are idempotent,
 	// and the identity guard makes the two interleavings equivalent.
@@ -467,6 +465,21 @@ function dedupedFetch(cacheKey: string, options: GetModelsOptions): Promise<Mode
 		},
 	}
 
+	// Arm the flight's bound only once the record exists: the deadline both aborts the shared
+	// fetch and releases the entry when no waiter remains. Cancellable flights are also removed
+	// by the last-waiter detach; non-cancellable SDK calls (poe/lmstudio) never are, so without
+	// this a retry after the deadline would join an already-expired flight and reject
+	// immediately, wedging discovery until a host restart. A settled flight reports pending ===
+	// false, so this can never evict a settled entry.
+	const onTimeout = () => {
+		controller.abort(timeoutSignal.reason)
+		if (record.waiters === 0 && record.pending) {
+			guardedDelete()
+		}
+	}
+	timeoutSignal.addEventListener("abort", onTimeout, { once: true })
+	removeTimeoutListener = () => timeoutSignal.removeEventListener("abort", onTimeout)
+
 	// The settle reactions above can only run after this function's current synchronous run --
 	// including the set() below -- completes, since that's the earliest a promise reaction can
 	// fire. So the entry is always registered before any settle handler can delete it, even if
@@ -497,7 +510,7 @@ function joinFlight(cacheKey: string, record: FlightRecord, callerSignal?: Abort
 		detached = true
 		removeViewListener?.()
 		record.waiters--
-		if (record.waiters === 0 && record.pending && record.cancelWhenUnused) {
+		if (record.waiters === 0 && record.pending && (record.cancelWhenUnused || record.timeoutSignal.aborted)) {
 			// Synchronous release: abort the shared fetch and drop the entry before any further
 			// await point runs, so a late joiner never sees a doomed flight.
 			record.controller.abort()

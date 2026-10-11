@@ -1682,7 +1682,7 @@ it("forwards the caller signal on the auth-scoped bypass without entering the fl
 // These SDKs cannot stop discovery when their caller aborts. Keep the pending
 // operation registered across selector unmount/remount and even after its bound.
 it.each([providerIdentifiers.poe, providerIdentifiers.lmstudio])(
-	"reuses pending %s discovery after cancellation and timeout until it settles",
+	"reuses pending %s discovery across cancellation and releases it at the bound",
 	async (provider) => {
 		setupCancellationMocks()
 		const timeoutController = new AbortController()
@@ -1705,18 +1705,18 @@ it.each([providerIdentifiers.poe, providerIdentifiers.lmstudio])(
 			expect(fetcher).toHaveBeenCalledTimes(1)
 			timeoutController.abort()
 			await expect(remounted).rejects.toMatchObject({ name: "AbortError" })
-			await expect(getModels({ provider })).rejects.toMatchObject({ name: "AbortError" })
-			expect(fetcher).toHaveBeenCalledTimes(1)
+			// The deadline released the entry even though the non-cancellable SDK call is still
+			// pending, so a retry starts a fresh flight instead of joining the expired one. Give
+			// the fresh flight its own (unaborted) bound; the original call is left to settle.
+			timeoutSpy.mockReturnValue(new AbortController().signal)
+			fetcher.mockResolvedValueOnce(cancelledModelsB)
+			await expect(getModels({ provider })).resolves.toEqual(cancelledModelsB)
+			expect(fetcher).toHaveBeenCalledTimes(2)
 			expect(getEventListeners(timeoutController.signal, "abort")).toHaveLength(0)
 
 			resolveDiscovery(cancelledModels)
 			await drainMicrotasks()
 			expect(getEventListeners(timeoutController.signal, "abort")).toHaveLength(0)
-			// Once the old SDK operation has actually finished, another request may start.
-			timeoutSpy.mockRestore()
-			fetcher.mockResolvedValueOnce(cancelledModelsB)
-			await expect(getModels({ provider })).resolves.toEqual(cancelledModelsB)
-			expect(fetcher).toHaveBeenCalledTimes(2)
 		} finally {
 			resolveDiscovery(cancelledModels)
 			timeoutSpy.mockRestore()

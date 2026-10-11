@@ -296,6 +296,21 @@ describe("ProfileValidator", () => {
 			expect(ProfileValidator.isProfileAllowed(profile, allowList)).toBe(true)
 		})
 
+		it("should fall back to the vendor/family compound id for vscode-lm when id is absent", () => {
+			const allowList: OrganizationAllowList = {
+				allowAll: false,
+				providers: {
+					[providerIdentifiers.vscodeLm]: { allowAll: false, models: ["copilot/gpt-4"] },
+				},
+			}
+			const profile: ProviderSettings = {
+				apiProvider: providerIdentifiers.vscodeLm,
+				vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-4" },
+			}
+
+			expect(ProfileValidator.isProfileAllowed(profile, allowList)).toBe(true)
+		})
+
 		it("should extract lmStudioModelId for lmstudio provider", () => {
 			const allowList: OrganizationAllowList = {
 				allowAll: false,

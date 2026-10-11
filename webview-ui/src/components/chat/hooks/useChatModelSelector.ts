@@ -171,6 +171,15 @@ export const useChatModelSelector = (): ChatModelSelectorData => {
 			return
 		}
 
+		// The effect reruns when the OpenAI request inputs change (base URL, API key, headers)
+		// without changing the provider. Drop the previous list first so credentials that were
+		// removed or replaced don't leave stale models selectable when no replacement request is
+		// sent. Request-ID creation and cleanup are unchanged, preserving cancellation behavior.
+		if (activeProvider === providerIdentifiers.openai) {
+			setOpenAiModels([])
+			setOpenAiModelsReceived(false)
+		}
+
 		const requestId = `${activeProvider}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 		latestRequestId.current = requestId
 
