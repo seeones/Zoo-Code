@@ -230,6 +230,64 @@ describe("webviewMessageHandler - organization allowlist enforcement", () => {
 		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(t("common:errors.violated_organization_allowlist"))
 	})
 
+	it("rejects a disallowed rename before saving, deleting, or activating a profile", async () => {
+		const saveConfig = vi.fn()
+		const deleteConfig = vi.fn()
+		const activateProviderProfile = vi.fn()
+		Object.assign(mockClineProvider, {
+			providerSettingsManager: {
+				getProfile: vi.fn().mockResolvedValue({ id: "profile-id" }),
+				saveConfig,
+				deleteConfig,
+			},
+			activateProviderProfile,
+		})
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "renameApiConfiguration",
+			values: { oldName: "old", newName: "new" },
+			apiConfiguration: { apiProvider: providerIdentifiers.anthropic, apiModelId: "claude-opus-4-20250514" },
+		})
+
+		expect(saveConfig).not.toHaveBeenCalled()
+		expect(deleteConfig).not.toHaveBeenCalled()
+		expect(activateProviderProfile).not.toHaveBeenCalled()
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(t("common:errors.violated_organization_allowlist"))
+	})
+
+	it.each([restrictiveAllowList, undefined])(
+		"renames an allowed profile and preserves its ID (%j)",
+		async (organizationAllowList) => {
+			mockClineProvider.getState = vi.fn().mockResolvedValue({ organizationAllowList })
+			const saveConfig = vi.fn()
+			const deleteConfig = vi.fn()
+			const activateProviderProfile = vi.fn()
+			Object.assign(mockClineProvider, {
+				providerSettingsManager: {
+					getProfile: vi.fn().mockResolvedValue({ id: "profile-id" }),
+					saveConfig,
+					deleteConfig,
+				},
+				activateProviderProfile,
+			})
+			const apiConfiguration = {
+				apiProvider: providerIdentifiers.anthropic,
+				apiModelId: "claude-sonnet-4-20250514",
+			}
+
+			await webviewMessageHandler(mockClineProvider, {
+				type: "renameApiConfiguration",
+				values: { oldName: "old", newName: "new" },
+				apiConfiguration,
+			})
+
+			expect(saveConfig).toHaveBeenCalledWith("new", { ...apiConfiguration, id: "profile-id" })
+			expect(deleteConfig).toHaveBeenCalledWith("old")
+			expect(activateProviderProfile).toHaveBeenCalledWith({ name: "new" })
+			expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+		},
+	)
+
 	it("allows an allow-listed model on upsertApiConfiguration", async () => {
 		const upsertProviderProfile = vi.fn().mockResolvedValue("id")
 		setUpsertSpy(upsertProviderProfile)
@@ -386,6 +444,43 @@ describe("webviewMessageHandler - requestLmStudioModels", () => {
 			requestId: "models-request",
 			lmStudioModels: mockModels,
 		})
+	})
+
+	it.each([
+		{ source: "persisted settings", values: undefined },
+		{ source: "request payload", values: { baseUrl: "http://127.0.0.1:4321" } },
+	])("completes empty and failed fetches using $source with the request ID", async ({ values }) => {
+		const fetchModels = values ? mockGetLMStudioModels : mockGetModels
+		fetchModels.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("LM Studio unavailable"))
+
+		for (const requestId of ["empty-models", "failed-models"]) {
+			vi.mocked(mockClineProvider.postMessageToWebview).mockClear()
+			await webviewMessageHandler(mockClineProvider, { type: "requestLmStudioModels", requestId, values })
+
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "lmStudioModels",
+				lmStudioModels: {},
+				requestId,
+			})
+		}
+	})
+
+	it("does not send a completion after a model request is cancelled", async () => {
+		mockGetLMStudioModels.mockImplementation(async () => {
+			await webviewMessageHandler(mockClineProvider, {
+				type: "cancelModelRequest",
+				requestId: "cancelled-models",
+			})
+			throw new Error("Request cancelled")
+		})
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "requestLmStudioModels",
+			requestId: "cancelled-models",
+			values: { baseUrl: "http://127.0.0.1:4321" },
+		})
+
+		expect(mockClineProvider.postMessageToWebview).not.toHaveBeenCalled()
 	})
 
 	it("prefers the request payload base URL over persisted settings", async () => {

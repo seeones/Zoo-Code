@@ -1484,11 +1484,11 @@ const handleWebviewMessage = async (
 		}
 		case LmStudioModelsMessageType.requestLmStudioModels: {
 			// Specific handler for LM Studio models only.
-			const { apiConfiguration: lmStudioApiConfig } = await provider.getState()
+			let lmStudioModels: ModelRecord = {}
 			try {
+				const { apiConfiguration: lmStudioApiConfig } = await provider.getState()
 				const requestedBaseUrl = message.values?.baseUrl
 				const hasPreviewBaseUrl = typeof requestedBaseUrl === "string"
-				let lmStudioModels: ModelRecord
 				if (hasPreviewBaseUrl) {
 					modelRequestSignal?.throwIfAborted()
 					lmStudioModels = await getLMStudioModels(
@@ -1504,20 +1504,17 @@ const handleWebviewMessage = async (
 					await flushRequestModels(lmStudioOptions, true)
 					lmStudioModels = await getRequestModels(lmStudioOptions)
 				}
-
-				if (Object.keys(lmStudioModels).length > 0) {
-					modelRequestSignal?.throwIfAborted()
-					await provider.postMessageToWebview({
-						type: LmStudioModelsMessageType.lmStudioModels,
-						lmStudioModels: lmStudioModels,
-						requestId: message.requestId,
-					})
-				}
 			} catch (error) {
 				modelRequestSignal?.throwIfAborted()
 				// Silently fail - user hasn't configured LM Studio yet.
 				console.debug("LM Studio models fetch failed:", error)
 			}
+			modelRequestSignal?.throwIfAborted()
+			await provider.postMessageToWebview({
+				type: LmStudioModelsMessageType.lmStudioModels,
+				lmStudioModels,
+				requestId: message.requestId,
+			})
 			break
 		}
 		case "requestRooModels": {
@@ -2433,6 +2430,18 @@ const handleWebviewMessage = async (
 						break
 					}
 
+					const { organizationAllowList } = await provider.getState()
+					if (
+						!ProfileValidator.isProfileAllowed(
+							message.apiConfiguration,
+							organizationAllowList ?? ORGANIZATION_ALLOW_ALL,
+						)
+					) {
+						throw new OrganizationAllowListViolationError(
+							t("common:errors.violated_organization_allowlist"),
+						)
+					}
+
 					// Load the old configuration to get its ID.
 					const { id } = await provider.providerSettingsManager.getProfile({ name: oldName })
 
@@ -2450,7 +2459,11 @@ const handleWebviewMessage = async (
 						`Error rename api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
 					)
 
-					vscode.window.showErrorMessage(t("common:errors.rename_api_config"))
+					vscode.window.showErrorMessage(
+						error instanceof OrganizationAllowListViolationError
+							? error.message
+							: t("common:errors.rename_api_config"),
+					)
 				}
 			}
 			break

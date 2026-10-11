@@ -4,6 +4,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 import {
 	anthropicDefaultModelId,
+	zooGatewayDefaultModelId,
+	opencodeGoDefaultModelId,
+	kenariDefaultModelId,
+	nanoGptDefaultModelId,
+	requestyDefaultModelId,
+	unboundDefaultModelId,
+	vercelAiGatewayDefaultModelId,
+	kimiCodeDefaultModelId,
 	mainlandZAiDefaultModelId,
 	providerIdentifiers,
 	retiredProviderIdentifiers,
@@ -161,31 +169,44 @@ describe("useChatModelSelector", () => {
 
 	describe("dynamic router providers", () => {
 		it.each([
-			[providerIdentifiers.zooGateway, "zooGatewayModelId", "anthropic/claude-sonnet-4"],
-			[providerIdentifiers.opencodeGo, "opencodeGoModelId", "glm-5.2"],
-			[providerIdentifiers.kenari, "kenariModelId", "glm-5-2"],
-			[providerIdentifiers.nanogpt, "nanoGptModelId", "openai/gpt-5.6-sol"],
-			[providerIdentifiers.requesty, "requestyModelId", "openai/gpt-5.1"],
-			[providerIdentifiers.unbound, "unboundModelId", "openai/gpt-4o"],
-			[providerIdentifiers.vercelAiGateway, "vercelAiGatewayModelId", "openai/gpt-4o-mini"],
-			[providerIdentifiers.kimiCode, "apiModelId", "kimi-k2"],
-		] as const)("reads %s models from the react-query routerModels", (provider, modelIdKey, modelId) => {
-			mockUseRouterModels.mockReturnValue({
-				data: { [provider]: { [modelId]: { maxTokens: 1, contextWindow: 1 } } },
-				isLoading: false,
-				isError: false,
-			})
-			mockUseExtensionState.mockReturnValue({
-				apiConfiguration: { apiProvider: provider, [modelIdKey]: modelId },
-				routerModels: undefined,
-			})
+			[
+				providerIdentifiers.zooGateway,
+				"zooGatewayModelId",
+				"anthropic/claude-sonnet-4",
+				zooGatewayDefaultModelId,
+			],
+			[providerIdentifiers.opencodeGo, "opencodeGoModelId", "glm-5.2", opencodeGoDefaultModelId],
+			[providerIdentifiers.kenari, "kenariModelId", "glm-5-2", kenariDefaultModelId],
+			[providerIdentifiers.nanogpt, "nanoGptModelId", "openai/gpt-5.6-sol", nanoGptDefaultModelId],
+			[providerIdentifiers.requesty, "requestyModelId", "openai/gpt-5.1", requestyDefaultModelId],
+			[providerIdentifiers.unbound, "unboundModelId", "openai/gpt-4o", unboundDefaultModelId],
+			[
+				providerIdentifiers.vercelAiGateway,
+				"vercelAiGatewayModelId",
+				"openai/gpt-4o-mini",
+				vercelAiGatewayDefaultModelId,
+			],
+			[providerIdentifiers.kimiCode, "apiModelId", "kimi-k2", kimiCodeDefaultModelId],
+		] as const)(
+			"reads %s models from the react-query routerModels",
+			(provider, modelIdKey, modelId, defaultModelId) => {
+				mockUseRouterModels.mockReturnValue({
+					data: { [provider]: { [modelId]: { maxTokens: 1, contextWindow: 1 } } },
+					isLoading: false,
+					isError: false,
+				})
+				mockUseExtensionState.mockReturnValue({
+					apiConfiguration: { apiProvider: provider, [modelIdKey]: modelId },
+					routerModels: undefined,
+				})
 
-			const { result } = renderHook(() => useChatModelSelector(), { wrapper })
+				const { result } = renderHook(() => useChatModelSelector(), { wrapper })
 
-			expect(result.current.modelIdKey).toBe(modelIdKey)
-			expect(result.current.defaultModelId).toBeTruthy()
-			expect(Object.keys(result.current.models!)).toEqual([modelId])
-		})
+				expect(result.current.modelIdKey).toBe(modelIdKey)
+				expect(result.current.defaultModelId).toBe(defaultModelId)
+				expect(Object.keys(result.current.models!)).toEqual([modelId])
+			},
+		)
 	})
 
 	describe("openai (OpenAI compatible)", () => {
