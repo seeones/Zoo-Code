@@ -66,6 +66,18 @@ const anthropicModels = {
 	},
 }
 
+// Build the hook's return value for a mocked render. A factory keeps the
+// default shape in one place so tests can override a single field without
+// invoking the mock itself (which is not callable under TypeScript).
+const createSelectorState = (overrides: Partial<ReturnType<typeof useChatModelSelector>> = {}) => ({
+	provider: providerIdentifiers.anthropic,
+	models: anthropicModels,
+	modelIdKey: "apiModelId",
+	defaultModelId: "claude-sonnet-4-20250514",
+	isLoading: false,
+	...overrides,
+})
+
 describe("ChatModelSelector", () => {
 	const defaultProps = {
 		title: "Select model",
@@ -101,13 +113,7 @@ describe("ChatModelSelector", () => {
 			organizationAllowList: { allowAll: true, providers: {} },
 			currentApiConfigName: "default",
 		})
-		mockUseChatModelSelector.mockReturnValue({
-			provider: providerIdentifiers.anthropic,
-			models: anthropicModels,
-			modelIdKey: "apiModelId",
-			defaultModelId: "claude-sonnet-4-20250514",
-			isLoading: false,
-		})
+		mockUseChatModelSelector.mockReturnValue(createSelectorState())
 	})
 
 	test("renders the trigger with the current model id", () => {
@@ -153,7 +159,7 @@ describe("ChatModelSelector", () => {
 
 	test.each([false, true])("handles an unmatched search while isLoading is %s", async (isLoading) => {
 		const user = userEvent.setup()
-		mockUseChatModelSelector.mockReturnValue({ ...mockUseChatModelSelector(), isLoading })
+		mockUseChatModelSelector.mockReturnValue(createSelectorState({ isLoading }))
 		render(<ChatModelSelector {...defaultProps} />)
 		await user.click(screen.getByTestId("chat-model-selector-trigger"))
 		await user.type(screen.getByRole("textbox"), "custom-model")
