@@ -151,6 +151,24 @@ describe("ChatModelSelector", () => {
 		expect(screen.getByText("chat:modelListEmpty")).toBeInTheDocument()
 	})
 
+	test.each([false, true])("handles an unmatched search while isLoading is %s", async (isLoading) => {
+		const user = userEvent.setup()
+		mockUseChatModelSelector.mockReturnValue({ ...mockUseChatModelSelector(), isLoading })
+		render(<ChatModelSelector {...defaultProps} />)
+		await user.click(screen.getByTestId("chat-model-selector-trigger"))
+		await user.type(screen.getByRole("textbox"), "custom-model")
+
+		expect(screen.queryByTestId("chat-model-option-claude-opus-4-20250514")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("chat-model-option-claude-sonnet-4-20250514")).not.toBeInTheDocument()
+		expect(screen.queryByText("chat:modelListEmpty") !== null).toBe(!isLoading)
+		expect(screen.getByTestId("chat-model-use-custom")).toBeInTheDocument()
+
+		await user.click(screen.getByRole("button", { name: "chat:clearSearch" }))
+		expect(screen.queryByText("chat:modelListEmpty")).not.toBeInTheDocument()
+		expect(screen.getByTestId("chat-model-option-claude-opus-4-20250514")).toBeInTheDocument()
+		expect(screen.getByTestId("chat-model-option-claude-sonnet-4-20250514")).toBeInTheDocument()
+	})
+
 	test("posts the transformed selection for compound configurations", async () => {
 		const user = userEvent.setup()
 		mockUseExtensionState.mockReturnValue({

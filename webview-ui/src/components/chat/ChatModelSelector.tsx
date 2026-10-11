@@ -196,7 +196,7 @@ export const ChatModelSelector = ({ disabled = false, title, triggerClassName = 
 						)}
 					</div>
 
-					{modelIds.length === 0 && !isLoading && (
+					{filteredModelIds.length === 0 && !isLoading && (
 						<div className="py-2 px-3 text-sm text-vscode-foreground/70">{t("chat:modelListEmpty")}</div>
 					)}
 
