@@ -597,6 +597,35 @@ describe("ClineProvider", () => {
 		expect(provider.isViewVisible).toBe(false)
 	})
 
+	test("cancels sidebar model discovery on close and accepts fresh requests after reopening", async () => {
+		const disposed = makeEventEmitter<void>()
+		vi.mocked(mockWebviewView.onDidDispose).mockImplementation(disposed.event)
+		await provider.resolveWebviewView(mockWebviewView)
+		const signals: AbortSignal[] = []
+		const discover = vi.fn(
+			(signal: AbortSignal) =>
+				new Promise<void>((_resolve, reject) => {
+					signals.push(signal)
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+				}),
+		)
+		const first = provider.modelRequests.run("first", discover)
+		const second = provider.modelRequests.run("second", discover)
+		disposed.fire()
+		expect(signals.map((signal) => signal.aborted)).toEqual([true, true])
+		expect(provider.modelRequests["requests"].size).toBe(0)
+		await Promise.all([first, second])
+
+		await provider.resolveWebviewView(mockWebviewView)
+		const fresh = provider.modelRequests.run("fresh", discover)
+		expect(discover).toHaveBeenCalledTimes(3)
+		expect(new Set(signals).size).toBe(3)
+		expect(signals[2].aborted).toBe(false)
+		disposed.fire()
+		expect(signals[2].aborted).toBe(true)
+		await fresh
+	})
+
 	describe("Add to Context destination", () => {
 		let originalInstances: Set<ClineProvider>
 		let tabProvider: ClineProvider

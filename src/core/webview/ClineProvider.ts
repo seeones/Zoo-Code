@@ -833,6 +833,7 @@ export class ClineProvider
 	- https://github.com/microsoft/vscode-extension-samples/blob/main/webview-sample/src/extension.ts
 	*/
 	private clearWebviewResources() {
+		this.modelRequests.cancelAll()
 		this.rejectPendingThemeFixtureProbes(new Error("Webview was disposed before the theme fixture probe completed"))
 		while (this.webviewDisposables.length) {
 			const x = this.webviewDisposables.pop()

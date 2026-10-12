@@ -22,8 +22,12 @@ export class ModelRequestRegistry {
 		this.requests.delete(id)
 	}
 
+	cancelAll(): void {
+		for (const id of this.requests.keys()) this.cancel(id)
+	}
+
 	dispose(): void {
 		this.disposed = true
-		for (const id of this.requests.keys()) this.cancel(id)
+		this.cancelAll()
 	}
 }

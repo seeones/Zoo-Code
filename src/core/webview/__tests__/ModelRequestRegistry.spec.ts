@@ -1,5 +1,34 @@
 import { ModelRequestRegistry } from "../ModelRequestRegistry"
 
+it("clears cancelled requests before settlement and preserves fresh requests after late completion", async () => {
+	const registry = new ModelRequestRegistry()
+	let finish!: () => void
+	let firstSignal!: AbortSignal
+	const first = registry.run("same-id", (signal) => {
+		firstSignal = signal
+		return new Promise<void>((resolve) => {
+			finish = resolve
+		})
+	})
+	registry.cancelAll()
+	expect(firstSignal.aborted).toBe(true)
+	expect(registry["requests"].size).toBe(0)
+	let freshSignal!: AbortSignal
+	const fresh = registry.run("same-id", (signal) => {
+		freshSignal = signal
+		return new Promise<void>((resolve) => {
+			signal.addEventListener("abort", () => resolve(), { once: true })
+		})
+	})
+	finish()
+	await first
+	expect(freshSignal.aborted).toBe(false)
+	expect(registry["requests"].size).toBe(1)
+	registry.cancelAll()
+	expect(freshSignal.aborted).toBe(true)
+	await fresh
+})
+
 it("aborts all pending requests on disposal and does not start new work", async () => {
 	const registry = new ModelRequestRegistry()
 	const signals: AbortSignal[] = []

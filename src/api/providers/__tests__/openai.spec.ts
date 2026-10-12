@@ -2008,6 +2008,14 @@ describe("getOpenAiModels", () => {
 		vi.mocked(axios.get).mockClear()
 	})
 
+	it("does not start an HTTP request when already cancelled", async () => {
+		const controller = new AbortController()
+		controller.abort()
+
+		expect(await getOpenAiModels("https://example.test/v1", "test-key", undefined, controller.signal)).toEqual([])
+		expect(axios.get).not.toHaveBeenCalled()
+	})
+
 	it("forwards cancellation to the HTTP request", async () => {
 		const controller = new AbortController()
 		vi.mocked(axios.get).mockImplementationOnce(
