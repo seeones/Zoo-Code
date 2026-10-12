@@ -155,40 +155,27 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	const [cachedState, setCachedState] = useState(() => extensionState)
 	const apiConfigurationBaseline = useRef(extensionState.apiConfiguration)
-	const pendingApiConfigurationSave = useRef<{ requestId: string; configuration: ProviderSettings }>()
-	const [isSavingApiConfiguration, setIsSavingApiConfiguration] = useState(false)
+	const pendingApiConfigurationSaves = useRef<[string, ProviderSettings][]>([])
+	const pendingRename = useRef<{ requestId: string; name: string }>()
 
 	useEffect(() => {
 		const handleSaveResult = (event: MessageEvent<ExtensionMessage>) => {
-			const pending = pendingApiConfigurationSave.current
-			if (event.data.type !== "apiConfigurationSaved" || !pending || event.data.requestId !== pending.requestId)
-				return
-			pendingApiConfigurationSave.current = undefined
-			setIsSavingApiConfiguration(false)
+			const index = pendingApiConfigurationSaves.current.findIndex(([id]) => id === event.data.requestId)
+			if (event.data.type !== "apiConfigurationSaved" || index < 0) return
+			if (pendingRename.current?.requestId === event.data.requestId && !event.data.success)
+				pendingRename.current = undefined
 			if (event.data.success) {
-				apiConfigurationBaseline.current = pending.configuration
+				apiConfigurationBaseline.current = pendingApiConfigurationSaves.current[index][1]
+				pendingApiConfigurationSaves.current.splice(0, index + 1)
 			} else {
-				// Retain the original baseline so a retry includes every rejected edit.
+				// Keep the last successful baseline so a retry includes rejected edits.
+				pendingApiConfigurationSaves.current.splice(index, 1)
 				setChangeDetected(true)
 			}
 		}
 		window.addEventListener("message", handleSaveResult)
 		return () => window.removeEventListener("message", handleSaveResult)
 	}, [])
-
-	useEffect(() => {
-		if (!isSavingApiConfiguration) return
-		const pending = pendingApiConfigurationSave.current
-		// The backend allows up to 60s of queue wait plus 30s for the mutation.
-		// Recover even if the request or acknowledgement was lost during a reload.
-		const timeout = setTimeout(() => {
-			if (pendingApiConfigurationSave.current !== pending) return
-			pendingApiConfigurationSave.current = undefined
-			setIsSavingApiConfiguration(false)
-			setChangeDetected(true)
-		}, 120_000)
-		return () => clearTimeout(timeout)
-	}, [isSavingApiConfiguration])
 
 	const {
 		alwaysAllowReadOnly,
@@ -268,9 +255,15 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			return
 		}
 
+		if (prevMode.current === mode && currentApiConfigName === pendingRename.current?.name) {
+			prevApiConfigName.current = currentApiConfigName
+			pendingRename.current = undefined
+			return
+		}
+
 		apiConfigurationBaseline.current = extensionState.apiConfiguration
-		pendingApiConfigurationSave.current = undefined
-		setIsSavingApiConfiguration(false)
+		pendingApiConfigurationSaves.current = []
+		pendingRename.current = undefined
 		setCachedState((prevCachedState) => ({ ...prevCachedState, ...extensionState }))
 		prevApiConfigName.current = currentApiConfigName
 		prevMode.current = mode
@@ -285,8 +278,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 		handledSettingsImportedAt.current = settingsImportedAt
 		apiConfigurationBaseline.current = extensionState.apiConfiguration
-		pendingApiConfigurationSave.current = undefined
-		setIsSavingApiConfiguration(false)
+		pendingApiConfigurationSaves.current = []
+		pendingRename.current = undefined
 		setCachedState((prevCachedState) => ({ ...prevCachedState, ...extensionState }))
 		setChangeDetected(false)
 	}, [settingsImportedAt, extensionState])
@@ -423,10 +416,11 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const isSettingValid = !errorMessage
 
 	const postApiConfiguration = (message: Pick<WebviewMessage, "type" | "text" | "values">) => {
-		if (pendingApiConfigurationSave.current) return
 		const requestId = `save-profile-${Date.now()}-${Math.random().toString(36).slice(2)}`
-		pendingApiConfigurationSave.current = { requestId, configuration: apiConfiguration }
-		setIsSavingApiConfiguration(true)
+		pendingApiConfigurationSaves.current.push([requestId, apiConfiguration])
+		if (message.type === "renameApiConfiguration") {
+			pendingRename.current = { requestId, name: message.values?.newName }
+		}
 		vscode.postMessage({
 			...message,
 			requestId,
@@ -436,7 +430,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	}
 
 	const handleSubmit = () => {
-		if (isSettingValid && !pendingApiConfigurationSave.current) {
+		if (isSettingValid) {
 			vscode.postMessage({
 				type: "updateSettings",
 				updatedSettings: {
@@ -542,8 +536,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			if (confirm) {
 				// Discard changes: Reset state and flag
 				apiConfigurationBaseline.current = extensionState.apiConfiguration
-				pendingApiConfigurationSave.current = undefined
-				setIsSavingApiConfiguration(false)
+				pendingApiConfigurationSaves.current = []
+				pendingRename.current = undefined
 				setCachedState(extensionState) // Revert to original state
 				setChangeDetected(false) // Reset change flag
 				confirmDialogHandler.current?.() // Execute the pending action (e.g., tab switch)
@@ -753,7 +747,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							variant={isSettingValid ? "primary" : "secondary"}
 							className={!isSettingValid ? "!border-vscode-errorForeground" : ""}
 							onClick={handleSubmit}
-							disabled={!isChangeDetected || !isSettingValid || isSavingApiConfiguration}
+							disabled={!isChangeDetected || !isSettingValid}
 							data-testid="save-button">
 							{t("settings:common.save")}
 						</Button>
@@ -832,7 +826,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 								<Section>
 									<ApiConfigManager
-										disabled={isSavingApiConfiguration}
 										currentApiConfigName={currentApiConfigName}
 										listApiConfigMeta={listApiConfigMeta}
 										onSelectConfig={(configName: string) =>

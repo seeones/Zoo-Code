@@ -248,6 +248,7 @@ vi.mock("../SettingsSearch", () => ({
 }))
 
 import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { AutoApproveSettings } from "../AutoApproveSettings"
 import ApiOptions from "../ApiOptions"
 import ApiConfigManager from "../ApiConfigManager"
 
@@ -775,37 +776,138 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		)
 	})
 
-	it("re-enables Save with the original baseline when its acknowledgement is lost", () => {
-		vi.mocked(ApiOptions).mockImplementation(({ setApiConfigurationField }) => (
-			<button data-testid="edit-before-timeout" onClick={() => setApiConfigurationField("modelTemperature", 0.5)}>
-				Edit
-			</button>
-		))
+	it.each([true, false])("preserves non-provider edits after rename success=%s", async (success) => {
 		const view = renderWithExtensionState(<SettingsView onDone={vi.fn()} />, { queryClient })
-		fireEvent.click(screen.getByTestId("edit-before-timeout"))
-		vi.useFakeTimers()
-		try {
-			fireEvent.click(screen.getByTestId("save-button"))
-			const first = postMessage.mock.calls
-				.map(([message]) => message)
-				.find((message) => message.type === "upsertApiConfiguration")!
-			expect(screen.getByTestId("save-button")).toBeDisabled()
-			expect(vi.mocked(ApiConfigManager).mock.lastCall?.[0].disabled).toBe(true)
-			act(() => vi.advanceTimersByTime(120_000))
-			expect(vi.mocked(ApiConfigManager).mock.lastCall?.[0].disabled).toBe(false)
-			expect(screen.getByTestId("save-button")).toBeEnabled()
-			postMessage.mockClear()
-			fireEvent.click(screen.getByTestId("save-button"))
-			const retry = postMessage.mock.calls
-				.map(([message]) => message)
-				.find((message) => message.type === "upsertApiConfiguration")!
-			expect(retry.requestId).not.toBe(first.requestId)
-			expect(retry.apiConfigurationBaseline).toEqual(first.apiConfigurationBaseline)
-			expect(retry.apiConfiguration).toEqual(first.apiConfiguration)
-		} finally {
-			view.unmount()
-			vi.useRealTimers()
+		await screen.findByTestId("save-button")
+		act(() => vi.mocked(AutoApproveSettings).mock.lastCall![0].setCachedStateField("alwaysAllowReadOnly", true))
+		act(() => vi.mocked(ApiConfigManager).mock.lastCall![0].onRenameConfig("default", "renamed"))
+		const rename = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((m) => m.type === "renameApiConfiguration")!
+		if (success) {
+			vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+				...defaultExtensionState,
+				currentApiConfigName: "renamed",
+			})
+			view.rerender(<SettingsView onDone={vi.fn()} />)
 		}
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: rename.requestId, success },
+			}),
+		)
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		postMessage.mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ alwaysAllowReadOnly: true }),
+			}),
+		)
+		expect(postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "upsertApiConfiguration",
+				text: success ? "renamed" : "default",
+			}),
+		)
+	})
+
+	it("ignores an older success acknowledgement after a newer save is confirmed", () => {
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<>
+				<input
+					data-testid="ordered-temperature"
+					value={apiConfiguration.modelTemperature ?? ""}
+					onChange={(event) => setApiConfigurationField("modelTemperature", Number(event.target.value))}
+				/>
+				<input
+					data-testid="ordered-key"
+					value={apiConfiguration.openAiApiKey ?? ""}
+					onChange={(event) => setApiConfigurationField("openAiApiKey", event.target.value)}
+				/>
+				<button
+					data-testid="clear-ordered-key"
+					onClick={() => setApiConfigurationField("openAiApiKey", undefined)}>
+					Clear key
+				</button>
+			</>
+		))
+		renderWithExtensionState(<SettingsView onDone={vi.fn()} />, { queryClient })
+		fireEvent.change(screen.getByTestId("ordered-temperature"), { target: { value: "0.5" } })
+		fireEvent.click(screen.getByTestId("save-button"))
+		const first = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((m) => m.type === "upsertApiConfiguration")!
+		postMessage.mockClear()
+		fireEvent.change(screen.getByTestId("ordered-key"), { target: { value: "new-key" } })
+		fireEvent.click(screen.getByTestId("save-button"))
+		const second = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((m) => m.type === "upsertApiConfiguration")!
+		for (const requestId of [second.requestId, first.requestId]) {
+			fireEvent(
+				window,
+				new MessageEvent("message", {
+					data: { type: "apiConfigurationSaved", requestId, success: true },
+				}),
+			)
+		}
+		postMessage.mockClear()
+		fireEvent.click(screen.getByTestId("clear-ordered-key"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const last = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((m) => m.type === "upsertApiConfiguration")!
+		expect(last.apiConfigurationBaseline?.openAiApiKey).toBe("new-key")
+		expect(last.apiConfiguration?.openAiApiKey).toBeUndefined()
+	})
+
+	it("allows another save after editing when the previous acknowledgement is lost", () => {
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<input
+				data-testid="temperature-without-ack"
+				value={apiConfiguration.modelTemperature ?? ""}
+				onChange={(event) => setApiConfigurationField("modelTemperature", Number(event.target.value))}
+			/>
+		))
+		renderWithExtensionState(<SettingsView onDone={vi.fn()} />, { queryClient })
+		fireEvent.change(screen.getByTestId("temperature-without-ack"), { target: { value: "0.5" } })
+		fireEvent.click(screen.getByTestId("save-button"))
+		const first = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((m) => m.type === "upsertApiConfiguration")!
+		postMessage.mockClear()
+		fireEvent.change(screen.getByTestId("temperature-without-ack"), { target: { value: "0.7" } })
+		fireEvent.click(screen.getByTestId("save-button"))
+		const second = postMessage.mock.calls
+			.map(([message]) => message)
+			.find((m) => m.type === "upsertApiConfiguration")!
+		expect(second.requestId).not.toBe(first.requestId)
+		expect(second.apiConfigurationBaseline).toEqual(first.apiConfigurationBaseline)
+		expect(second.apiConfiguration?.modelTemperature).toBe(0.7)
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: first.requestId, success: true },
+			}),
+		)
+		fireEvent(
+			window,
+			new MessageEvent("message", {
+				data: { type: "apiConfigurationSaved", requestId: second.requestId, success: false },
+			}),
+		)
+		postMessage.mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "upsertApiConfiguration",
+				apiConfigurationBaseline: expect.objectContaining({ modelTemperature: 0.5 }),
+				apiConfiguration: expect.objectContaining({ modelTemperature: 0.7 }),
+			}),
+		)
 	})
 
 	it("keeps OpenAI-compatible reasoning edits cached until Save despite a live state refresh", async () => {

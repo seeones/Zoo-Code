@@ -24,7 +24,7 @@ describe("isProviderAllowAll", () => {
 		expect(isProviderAllowAll(allowList, providerIdentifiers.anthropic)).toBe(false)
 	})
 
-	it("allows a provider narrowed to a model list (the list still constrains models)", () => {
+	it("rejects allowAll for a provider narrowed to a model list", () => {
 		const allowList: OrganizationAllowList = {
 			allowAll: false,
 			providers: { [providerIdentifiers.anthropic]: { allowAll: false, models: ["m"] } },

@@ -382,8 +382,8 @@ export class ProviderSettingsManager {
 	}
 
 	private normalizeConfig(config: ProviderSettingsWithId): ProviderSettingsWithId {
-		const normalizedConfig = downgradeLegacyRooConfig(config as Record<string, unknown>)
-			.config as ProviderSettingsWithId
+		const normalizedConfig = { ...downgradeLegacyRooConfig(config as Record<string, unknown>).config }
+		delete normalizedConfig.name
 
 		// For active providers, filter out settings from other providers.
 		// For retired providers, preserve full profile fields (including legacy
@@ -395,11 +395,11 @@ export class ProviderSettingsManager {
 	}
 
 	private assertConfigUnchanged(profiles: ProviderProfiles, name: string, expected?: ProviderSettingsWithId) {
-		// Match the JSON representation written to storage (undefined fields are omitted).
-		if (
-			expected &&
-			!deepEqual(profiles.apiConfigs[name], JSON.parse(JSON.stringify(this.normalizeConfig(expected))))
-		) {
+		if (!expected) return
+		const snapshot = { ...expected } as Record<string, unknown>
+		delete snapshot.name
+		// Compare the stored snapshot without dropping known fields from other providers.
+		if (!deepEqual(profiles.apiConfigs[name], JSON.parse(JSON.stringify(snapshot)))) {
 			throw new ProviderProfileConflictError(name)
 		}
 	}

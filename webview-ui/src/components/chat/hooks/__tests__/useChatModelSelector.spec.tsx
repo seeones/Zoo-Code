@@ -320,7 +320,11 @@ describe("useChatModelSelector", () => {
 			const { result } = renderHook(() => useChatModelSelector(), { wrapper })
 
 			act(() => {
-				emitMessage({ type: "openAiModels", openAiModels: ["gpt-4o", "gpt-4o-mini"] })
+				emitMessage({
+					type: "openAiModels",
+					openAiModels: ["gpt-4o", "gpt-4o-mini"],
+					requestId: mockPostMessage.mock.calls[0][0].requestId,
+				})
 			})
 
 			await waitFor(() => {
@@ -359,37 +363,40 @@ describe("useChatModelSelector", () => {
 			expect(result.current.models).toBeNull()
 		})
 
-		it("ignores model responses whose requestId does not match the latest request", async () => {
-			mockUseExtensionState.mockReturnValue({
-				apiConfiguration: {
-					apiProvider: providerIdentifiers.openai,
-					openAiBaseUrl: "https://api.example.com/v1",
-					openAiApiKey: "test-key",
-					openAiHeaders: {},
-				},
-				routerModels: undefined,
-			})
+		it.each(["different-request", undefined])(
+			"ignores model responses with unrelated requestId (%s)",
+			async (invalidRequestId) => {
+				mockUseExtensionState.mockReturnValue({
+					apiConfiguration: {
+						apiProvider: providerIdentifiers.openai,
+						openAiBaseUrl: "https://api.example.com/v1",
+						openAiApiKey: "test-key",
+						openAiHeaders: {},
+					},
+					routerModels: undefined,
+				})
 
-			const { result } = renderHook(() => useChatModelSelector(), { wrapper })
+				const { result } = renderHook(() => useChatModelSelector(), { wrapper })
 
-			const requestId = mockPostMessage.mock.calls[0][0].requestId as string
-			expect(typeof requestId).toBe("string")
+				const requestId = mockPostMessage.mock.calls[0][0].requestId as string
+				expect(typeof requestId).toBe("string")
 
-			// A response for a different request is stale and must be discarded.
-			act(() => {
-				emitMessage({ type: "openAiModels", openAiModels: ["stale-model"], requestId: "different-request" })
-			})
-			expect(result.current.models).toBeNull()
+				// A response for a different request is stale and must be discarded.
+				act(() => {
+					emitMessage({ type: "openAiModels", openAiModels: ["stale-model"], requestId: invalidRequestId })
+				})
+				expect(result.current.models).toBeNull()
 
-			// The matching response is applied.
-			act(() => {
-				emitMessage({ type: "openAiModels", openAiModels: ["fresh-model"], requestId })
-			})
-			await waitFor(() => {
-				expect(result.current.models).not.toBeNull()
-			})
-			expect(Object.keys(result.current.models!)).toEqual(["fresh-model"])
-		})
+				// The matching response is applied.
+				act(() => {
+					emitMessage({ type: "openAiModels", openAiModels: ["fresh-model"], requestId })
+				})
+				await waitFor(() => {
+					expect(result.current.models).not.toBeNull()
+				})
+				expect(Object.keys(result.current.models!)).toEqual(["fresh-model"])
+			},
+		)
 	})
 
 	describe("router providers", () => {
@@ -482,7 +489,11 @@ describe("useChatModelSelector", () => {
 			const { result } = renderHook(() => useChatModelSelector(), { wrapper })
 
 			act(() => {
-				emitMessage({ type: "ollamaModels", ollamaModels: { llama3: { maxTokens: 1, contextWindow: 1 } } })
+				emitMessage({
+					type: "ollamaModels",
+					ollamaModels: { llama3: { maxTokens: 1, contextWindow: 1 } },
+					requestId: mockPostMessage.mock.calls[0][0].requestId,
+				})
 			})
 
 			await waitFor(() => {
@@ -514,6 +525,7 @@ describe("useChatModelSelector", () => {
 			act(() => {
 				emitMessage({
 					type: "lmStudioModels",
+					requestId: mockPostMessage.mock.calls[0][0].requestId,
 					lmStudioModels: { "local-model": { maxTokens: 1, contextWindow: 1 } },
 				})
 			})
@@ -538,6 +550,7 @@ describe("useChatModelSelector", () => {
 			act(() => {
 				emitMessage({
 					type: "vsCodeLmModels",
+					requestId: mockPostMessage.mock.calls[0][0].requestId,
 					vsCodeLmModels: [{ vendor: "copilot", family: "gpt-4o" }],
 				})
 			})
@@ -563,6 +576,7 @@ describe("useChatModelSelector", () => {
 			act(() => {
 				emitMessage({
 					type: "vsCodeLmModels",
+					requestId: mockPostMessage.mock.calls[0][0].requestId,
 					vsCodeLmModels: [{ vendor: "copilot", family: "gpt-4o" }],
 				})
 			})
@@ -593,13 +607,25 @@ describe("useChatModelSelector", () => {
 			{ type: "vsCodeLmModels", vsCodeLmModels: [{ vendor: "old", family: "model" }] },
 		],
 	])("discards cached %s models when switching providers", (provider, message) => {
-		mockUseExtensionState.mockReturnValue({ apiConfiguration: { apiProvider: provider } })
+		mockUseExtensionState.mockReturnValue({
+			apiConfiguration: {
+				apiProvider: provider,
+				openAiBaseUrl: "https://example.test/v1",
+				openAiApiKey: "test-key",
+			},
+		})
 		const { result, rerender } = renderHook(() => useChatModelSelector(), { wrapper })
-		act(() => emitMessage(message))
+		act(() => emitMessage({ ...message, requestId: mockPostMessage.mock.lastCall?.[0].requestId }))
 		expect(Object.keys(result.current.models!)).toHaveLength(1)
 		mockUseExtensionState.mockReturnValue({ apiConfiguration: { apiProvider: providerIdentifiers.anthropic } })
 		rerender()
-		mockUseExtensionState.mockReturnValue({ apiConfiguration: { apiProvider: provider } })
+		mockUseExtensionState.mockReturnValue({
+			apiConfiguration: {
+				apiProvider: provider,
+				openAiBaseUrl: "https://example.test/v1",
+				openAiApiKey: "test-key",
+			},
+		})
 		rerender()
 		expect(Object.keys(result.current.models ?? {})).toHaveLength(0)
 	})

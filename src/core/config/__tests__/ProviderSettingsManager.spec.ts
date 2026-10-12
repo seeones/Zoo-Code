@@ -106,6 +106,27 @@ describe("ProviderSettingsManager", () => {
 			}
 		})
 
+		it.each(["save", "delete", "migrate"] as const)(
+			"allows %s for a retired profile read with its name",
+			async (operation) => {
+				await providerSettingsManager.saveConfig("retired", {
+					apiProvider: retiredProviderIdentifiers.groq,
+					apiModelId: "legacy-model",
+				})
+				const expected = await providerSettingsManager.getProfile({ name: "retired" })
+				if (operation === "delete") {
+					await providerSettingsManager.deleteConfig("retired", expected)
+					expect(await providerSettingsManager.hasConfig("retired")).toBe(false)
+				} else {
+					const updated = operation === "migrate" ? original : expected
+					await providerSettingsManager.saveConfig("retired", updated, expected)
+					const stored = (await providerSettingsManager.export()).apiConfigs.retired
+					expect(stored).not.toHaveProperty("name")
+					expect(stored.apiProvider).toBe(updated.apiProvider)
+				}
+			},
+		)
+
 		it.each(["save", "delete"] as const)(
 			"rejects %s without writing when the expected profile is stale",
 			async (operation) => {
@@ -137,6 +158,66 @@ describe("ProviderSettingsManager", () => {
 				})
 			},
 		)
+
+		it("applies the initial OpenRouter model patch to an unconfigured profile", async () => {
+			await providerSettingsManager.saveConfig("empty", {})
+			await providerSettingsManager.saveConfig(
+				"empty",
+				{
+					apiProvider: providerIdentifiers.openrouter,
+					openRouterModelId: "new-model",
+				},
+				undefined,
+				{},
+			)
+			expect(await providerSettingsManager.getProfile({ name: "empty" })).toMatchObject({
+				apiProvider: providerIdentifiers.openrouter,
+				openRouterModelId: "new-model",
+			})
+		})
+
+		it("applies a model-only patch while retaining credentials and other settings", async () => {
+			await providerSettingsManager.saveConfig("profile", { ...original, modelTemperature: 0.3 })
+			await providerSettingsManager.saveConfig(
+				"profile",
+				{ apiProvider: original.apiProvider, openRouterModelId: "new-model" },
+				undefined,
+				{ apiProvider: original.apiProvider, openRouterModelId: original.openRouterModelId },
+			)
+			expect(await providerSettingsManager.getProfile({ name: "profile" })).toMatchObject({
+				openRouterApiKey: original.openRouterApiKey,
+				openRouterModelId: "new-model",
+				modelTemperature: 0.3,
+			})
+		})
+
+		it.each([undefined, original.apiProvider])("accepts a raw snapshot for provider %s", async (apiProvider) => {
+			const profiles = await providerSettingsManager.export()
+			profiles.apiConfigs.profile = {
+				...profiles.apiConfigs.profile,
+				apiProvider,
+				apiKey: "legacy-other-provider-key",
+				rateLimitSeconds: 1,
+			}
+			await providerSettingsManager.import(profiles)
+			const expected = await providerSettingsManager.getProfile({ name: "profile" })
+			await providerSettingsManager.saveConfig("profile", original, expected)
+			expect(await providerSettingsManager.getProfile({ name: "profile" })).toMatchObject(original)
+		})
+
+		it("detects a concurrent change even to a field filtered out by provider normalization", async () => {
+			const profiles = await providerSettingsManager.export()
+			profiles.apiConfigs.profile.apiKey = "legacy-key"
+			await providerSettingsManager.import(profiles)
+			const expected = await providerSettingsManager.getProfile({ name: "profile" })
+			profiles.apiConfigs.profile.apiKey = "concurrent-key"
+			await providerSettingsManager.import(profiles)
+			mockSecrets.store.mockClear()
+			await expect(providerSettingsManager.saveConfig("profile", original, expected)).rejects.toBeInstanceOf(
+				ProviderProfileConflictError,
+			)
+			expect(mockSecrets.store).not.toHaveBeenCalled()
+		})
 
 		it("rejects conflicting edits and provider switches without writes", async () => {
 			await providerSettingsManager.saveConfig("profile", { ...original, openRouterModelId: "new-model" })

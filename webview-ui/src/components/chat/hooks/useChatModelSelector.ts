@@ -5,7 +5,6 @@ import {
 	type ModelInfo,
 	type ModelRecord,
 	type ExtensionMessage,
-	type LanguageModelChatSelector,
 	type ProviderName,
 	type ProviderSettings,
 	getProviderDefaultModelId,
@@ -114,71 +113,34 @@ export const useChatModelSelector = (): ChatModelSelectorData => {
 	// `requestId` and a response is only applied when it matches the most
 	// recent request, so stale/out-of-order responses (for a previous provider
 	// or an earlier base URL) cannot clobber the current list.
-	const [openAiModels, setOpenAiModels] = useState<string[]>([])
-	const [ollamaModels, setOllamaModels] = useState<ModelRecord>({})
-	const [lmStudioModels, setLmStudioModels] = useState<ModelRecord>({})
-	const [vsCodeLmModels, setVsCodeLmModels] = useState<LanguageModelChatSelector[]>([])
-	// Track request completion explicitly. `openAiModels.length === 0` is a valid
-	// successful result (an endpoint with no models), so it alone must not keep
-	// the picker in a permanent loading state.
-	const [openAiModelsReceived, setOpenAiModelsReceived] = useState(false)
+	const [catalog, setCatalog] = useState<
+		Pick<ExtensionMessage, "openAiModels" | "ollamaModels" | "lmStudioModels" | "vsCodeLmModels">
+	>({})
 	// Only one message-based provider is active at a time, so a single latest
 	// request id is sufficient to reject stale responses.
 	const latestRequestId = useRef<string | undefined>(undefined)
 
 	const onMessage = useCallback((event: MessageEvent) => {
 		const message: ExtensionMessage = event.data
-		// Responses without a requestId are broadcast/legacy payloads and are
-		// accepted; responses with a mismatching id are stale and ignored.
-		const isStale = (): boolean => message.requestId !== undefined && message.requestId !== latestRequestId.current
-		switch (message.type) {
-			case "openAiModels":
-				if (isStale()) break
-				setOpenAiModels(message.openAiModels ?? [])
-				setOpenAiModelsReceived(true)
-				break
-			case "ollamaModels":
-				if (isStale()) break
-				setOllamaModels(message.ollamaModels ?? {})
-				break
-			case "lmStudioModels":
-				if (isStale()) break
-				setLmStudioModels(message.lmStudioModels ?? {})
-				break
-			case "vsCodeLmModels":
-				if (isStale()) break
-				setVsCodeLmModels(message.vsCodeLmModels ?? [])
-				break
+		if (message.requestId !== latestRequestId.current) return
+		if (["openAiModels", "ollamaModels", "lmStudioModels", "vsCodeLmModels"].includes(message.type)) {
+			setCatalog((previous) => ({ ...previous, ...message }))
 		}
 	}, [])
 	useEvent("message", onMessage)
-
-	useEffect(() => {
-		setOpenAiModels([])
-		setOllamaModels({})
-		setLmStudioModels({})
-		setVsCodeLmModels([])
-		setOpenAiModelsReceived(false)
-		latestRequestId.current = undefined
-	}, [activeProvider])
 
 	const serializedOpenAiHeaders = JSON.stringify(apiConfiguration?.openAiHeaders ?? {})
 
 	// Request models on mount when a message-based provider is active
 	// (mirrors Ollama.tsx / LMStudio.tsx / OpenAICompatible.tsx behaviors).
 	useEffect(() => {
+		setCatalog({})
+		latestRequestId.current = undefined
 		if (!activeProvider || !MESSAGE_BASED_PROVIDERS.has(activeProvider)) {
 			return
 		}
 
-		// The effect reruns when the OpenAI request inputs change (base URL, API key, headers)
-		// without changing the provider. Drop the previous list first so credentials that were
-		// removed or replaced don't leave stale models selectable when no replacement request is
-		// sent. Request-ID creation and cleanup are unchanged, preserving cancellation behavior.
-		if (activeProvider === providerIdentifiers.openai) {
-			setOpenAiModels([])
-			setOpenAiModelsReceived(false)
-		}
+		// Reset the catalog when the provider or request inputs change.
 
 		const requestId = `${activeProvider}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 		latestRequestId.current = requestId
@@ -217,92 +179,84 @@ export const useChatModelSelector = (): ChatModelSelectorData => {
 	// Resolve the model list + storage key + transforms for the active provider.
 	// The default id comes from the shared provider registry.
 	return useMemo<ChatModelSelectorData>(() => {
-		if (!activeProvider) {
-			return {
-				provider: undefined,
-				models: null,
-				modelIdKey: undefined,
-				defaultModelId: "",
-				isLoading: false,
-			}
-		}
-
-		const defaultModelId = getProviderDefaultModelId(activeProvider, {
-			isChina: activeProvider === providerIdentifiers.zai && apiConfiguration?.zaiApiLine === "china_coding",
-		})
-
-		if (routerConfig) {
-			// RouterModels is keyed by dynamic/local providers only, so a narrow
-			// structural cast is needed to index it by the active provider name.
-			const source = (routerConfig.fromState ? stateRouterModels : routerModels.data) as
-				| Partial<Record<ProviderName, ModelRecord>>
-				| undefined
-			return {
-				provider: activeProvider,
-				models: source?.[activeProvider] ?? null,
-				modelIdKey: routerConfig.modelIdKey,
-				defaultModelId,
-				isLoading: routerConfig.fromState ? false : routerModels.isLoading,
-			}
-		}
-
 		let models: Record<string, ModelInfo> | null = null
 		let modelIdKey: ModelIdKey | undefined = undefined
 		let valueTransform: ((modelId: string) => unknown) | undefined
 		let displayTransform: ((value: unknown) => string) | undefined
 		let isLoading = false
 
-		switch (activeProvider) {
-			case providerIdentifiers.openai:
-				// OpenAI Compatible: the list is fetched from the baseUrl via
-				// `requestOpenAiModels` and delivered through `openAiModels`.
-				models =
-					Object.keys(openAiModels).length > 0
-						? Object.fromEntries(openAiModels.map((item) => [item, openAiModelInfoSaneDefaults]))
-						: null
-				modelIdKey = "openAiModelId"
-				isLoading =
-					!!apiConfiguration?.openAiBaseUrl && !!apiConfiguration?.openAiApiKey && !openAiModelsReceived
-				break
-			case providerIdentifiers.ollama:
-				models = Object.keys(ollamaModels).length > 0 ? ollamaModels : null
-				modelIdKey = "ollamaModelId"
-				break
-			case providerIdentifiers.lmstudio:
-				models = Object.keys(lmStudioModels).length > 0 ? lmStudioModels : null
-				modelIdKey = "lmStudioModelId"
-				break
-			case providerIdentifiers.vscodeLm:
-				models = vsCodeLmModels.reduce(
-					(acc, model) => {
-						const modelId = `${model.vendor}/${model.family}`
-						acc[modelId] = {
-							maxTokens: 0,
-							contextWindow: 0,
-							supportsPromptCache: false,
-							description: `${model.vendor} - ${model.family}`,
+		let defaultModelId = ""
+		if (activeProvider) {
+			defaultModelId = getProviderDefaultModelId(activeProvider, {
+				isChina: activeProvider === providerIdentifiers.zai && apiConfiguration?.zaiApiLine === "china_coding",
+			})
+
+			if (routerConfig) {
+				// RouterModels is keyed by dynamic/local providers only, so a narrow
+				// structural cast is needed to index it by the active provider name.
+				const source = (routerConfig.fromState ? stateRouterModels : routerModels.data) as
+					| Partial<Record<ProviderName, ModelRecord>>
+					| undefined
+				models = source?.[activeProvider] ?? null
+				modelIdKey = routerConfig.modelIdKey
+				isLoading = routerConfig.fromState ? false : routerModels.isLoading
+			} else {
+				switch (activeProvider) {
+					case providerIdentifiers.openai:
+						// OpenAI Compatible: the list is fetched from the baseUrl via
+						// `requestOpenAiModels` and delivered through `openAiModels`.
+						models = catalog.openAiModels?.length
+							? Object.fromEntries(
+									catalog.openAiModels.map((item) => [item, openAiModelInfoSaneDefaults]),
+								)
+							: null
+						modelIdKey = "openAiModelId"
+						isLoading =
+							!!apiConfiguration?.openAiBaseUrl &&
+							!!apiConfiguration?.openAiApiKey &&
+							catalog.openAiModels === undefined
+						break
+					case providerIdentifiers.ollama:
+						models = catalog.ollamaModels ?? null
+						modelIdKey = "ollamaModelId"
+						break
+					case providerIdentifiers.lmstudio:
+						models = catalog.lmStudioModels ?? null
+						modelIdKey = "lmStudioModelId"
+						break
+					case providerIdentifiers.vscodeLm:
+						models = (catalog.vsCodeLmModels ?? []).reduce(
+							(acc, model) => {
+								const modelId = `${model.vendor}/${model.family}`
+								acc[modelId] = {
+									maxTokens: 0,
+									contextWindow: 0,
+									supportsPromptCache: false,
+									description: `${model.vendor} - ${model.family}`,
+								}
+								return acc
+							},
+							{} as Record<string, ModelInfo>,
+						)
+						modelIdKey = "vsCodeLmModelSelector"
+						valueTransform = (modelId) => {
+							const [vendor, family] = modelId.split("/")
+							return { vendor, family }
 						}
-						return acc
-					},
-					{} as Record<string, ModelInfo>,
-				)
-				modelIdKey = "vsCodeLmModelSelector"
-				valueTransform = (modelId) => {
-					const [vendor, family] = modelId.split("/")
-					return { vendor, family }
+						displayTransform = (value) => {
+							if (!value) return ""
+							const selector = value as { vendor?: string; family?: string }
+							return selector.vendor && selector.family ? `${selector.vendor}/${selector.family}` : ""
+						}
+						break
+					default:
+						// Static models providers (anthropic, bedrock, gemini, etc.).
+						models = MODELS_BY_PROVIDER[activeProvider]
+							? getStaticModelsForProvider(activeProvider, undefined, apiConfiguration)
+							: null
+						modelIdKey = "apiModelId"
 				}
-				displayTransform = (value) => {
-					if (!value) return ""
-					const selector = value as { vendor?: string; family?: string }
-					return selector.vendor && selector.family ? `${selector.vendor}/${selector.family}` : ""
-				}
-				break
-			default:
-				// Static models providers (anthropic, bedrock, gemini, etc.).
-				models = MODELS_BY_PROVIDER[activeProvider]
-					? getStaticModelsForProvider(activeProvider, undefined, apiConfiguration)
-					: null
-				modelIdKey = "apiModelId"
+			}
 		}
 
 		return {
@@ -314,16 +268,5 @@ export const useChatModelSelector = (): ChatModelSelectorData => {
 			valueTransform,
 			displayTransform,
 		}
-	}, [
-		activeProvider,
-		routerConfig,
-		apiConfiguration,
-		routerModels,
-		stateRouterModels,
-		openAiModels,
-		openAiModelsReceived,
-		ollamaModels,
-		lmStudioModels,
-		vsCodeLmModels,
-	])
+	}, [activeProvider, routerConfig, apiConfiguration, routerModels, stateRouterModels, catalog])
 }

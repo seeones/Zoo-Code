@@ -211,7 +211,7 @@ describe("webviewMessageHandler - organization allowlist enforcement", () => {
 		})
 
 		expect(upsertProviderProfile).not.toHaveBeenCalled()
-		expect(vscode.window.showErrorMessage).toHaveBeenCalled()
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(t("common:errors.violated_organization_allowlist"))
 	})
 
 	it("rejects a disallowed save without persisting or updating state", async () => {

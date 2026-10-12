@@ -266,6 +266,57 @@ describe("ChatModelSelector", () => {
 		})
 	})
 
+	test("persists the resolved OpenRouter provider for an unset provider", () => {
+		mockUseExtensionState.mockReturnValue({
+			...mockUseExtensionState(),
+			apiConfiguration: {},
+		})
+		mockUseChatModelSelector.mockReturnValue(
+			createSelectorState({
+				provider: providerIdentifiers.openrouter,
+				modelIdKey: "openRouterModelId",
+			}),
+		)
+		render(<ChatModelSelector {...defaultProps} />)
+		fireEvent.click(screen.getByTestId("chat-model-selector-trigger"))
+		fireEvent.click(screen.getByTestId("chat-model-option-claude-sonnet-4-20250514"))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiConfiguration: {
+					apiProvider: providerIdentifiers.openrouter,
+					openRouterModelId: "claude-sonnet-4-20250514",
+				},
+			}),
+		)
+	})
+
+	test("posts only the model edit without forwarding credentials or other settings", () => {
+		mockUseExtensionState.mockReturnValue({
+			...mockUseExtensionState(),
+			apiConfiguration: {
+				apiProvider: providerIdentifiers.anthropic,
+				apiModelId: "claude-opus-4-20250514",
+				apiKey: "synthetic-private-key",
+				modelTemperature: 0.3,
+			},
+		})
+		render(<ChatModelSelector {...defaultProps} />)
+		fireEvent.click(screen.getByTestId("chat-model-selector-trigger"))
+		fireEvent.click(screen.getByTestId("chat-model-option-claude-sonnet-4-20250514"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "upsertApiConfiguration",
+			text: "default",
+			apiConfigurationBaseline: {
+				apiProvider: providerIdentifiers.anthropic,
+				apiModelId: "claude-opus-4-20250514",
+			},
+			apiConfiguration: {
+				apiProvider: providerIdentifiers.anthropic,
+				apiModelId: "claude-sonnet-4-20250514",
+			},
+		})
+	})
+
 	test("supports custom model via search", () => {
 		render(<ChatModelSelector {...defaultProps} />)
 

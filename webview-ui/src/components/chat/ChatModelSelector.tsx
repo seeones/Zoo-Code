@@ -96,14 +96,17 @@ export const ChatModelSelector = ({ disabled = false, title, triggerClassName = 
 			vscode.postMessage({
 				type: "upsertApiConfiguration",
 				text: currentApiConfigName,
-				apiConfigurationBaseline: apiConfiguration,
+				apiConfigurationBaseline: {
+					apiProvider: apiConfiguration.apiProvider,
+					[modelIdKey]: apiConfiguration[modelIdKey],
+				},
 				apiConfiguration: {
-					...apiConfiguration,
+					apiProvider: provider,
 					[modelIdKey]: valueToStore,
 				},
 			})
 		},
-		[modelIdKey, apiConfiguration, valueTransform, currentApiConfigName, isModelAllowed],
+		[provider, modelIdKey, apiConfiguration, valueTransform, currentApiConfigName, isModelAllowed],
 	)
 
 	const onClearSearch = useCallback(() => {

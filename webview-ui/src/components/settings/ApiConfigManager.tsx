@@ -17,7 +17,6 @@ import {
 } from "@/components/ui"
 
 interface ApiConfigManagerProps {
-	disabled?: boolean
 	currentApiConfigName?: string
 	listApiConfigMeta?: ProviderSettingsEntry[]
 	organizationAllowList?: OrganizationAllowList
@@ -28,7 +27,6 @@ interface ApiConfigManagerProps {
 }
 
 const ApiConfigManager = ({
-	disabled = false,
 	currentApiConfigName = "",
 	listApiConfigMeta = [],
 	organizationAllowList,
@@ -121,18 +119,16 @@ const ApiConfigManager = ({
 	}, [currentApiConfigName])
 
 	const handleSelectConfig = (configName: string) => {
-		if (disabled || !configName) return
+		if (!configName) return
 		onSelectConfig(configName)
 	}
 
 	const handleAdd = () => {
-		if (disabled) return
 		resetCreateState()
 		setIsCreating(true)
 	}
 
 	const handleStartRename = () => {
-		if (disabled) return
 		setIsRenaming(true)
 		setInputValue(currentApiConfigName || "")
 		setError(null)
@@ -143,7 +139,6 @@ const ApiConfigManager = ({
 	}
 
 	const handleSave = () => {
-		if (disabled) return
 		const trimmedValue = inputValue.trim()
 		const error = validateName(trimmedValue, false)
 
@@ -164,7 +159,6 @@ const ApiConfigManager = ({
 	}
 
 	const handleNewProfileSave = () => {
-		if (disabled) return
 		const trimmedValue = newProfileName.trim()
 		const error = validateName(trimmedValue, true)
 
@@ -178,7 +172,7 @@ const ApiConfigManager = ({
 	}
 
 	const handleDelete = () => {
-		if (disabled || !currentApiConfigName || !listApiConfigMeta || listApiConfigMeta.length <= 1) return
+		if (!currentApiConfigName || !listApiConfigMeta || listApiConfigMeta.length <= 1) return
 
 		// Let the extension handle both deletion and selection.
 		onDeleteConfig(currentApiConfigName)
@@ -194,7 +188,6 @@ const ApiConfigManager = ({
 				<div data-testid="rename-form">
 					<div className="flex items-center gap-1">
 						<VSCodeTextField
-							disabled={disabled}
 							ref={inputRef}
 							value={inputValue}
 							onInput={(e: unknown) => {
@@ -216,7 +209,7 @@ const ApiConfigManager = ({
 							<Button
 								variant="ghost"
 								size="icon"
-								disabled={disabled || !inputValue.trim()}
+								disabled={!inputValue.trim()}
 								onClick={handleSave}
 								data-testid="save-rename-button">
 								<span className="codicon codicon-check" />
@@ -242,7 +235,6 @@ const ApiConfigManager = ({
 				<>
 					<div className="flex items-center gap-1">
 						<SearchableSelect
-							disabled={disabled}
 							value={currentApiConfigName}
 							onValueChange={handleSelectConfig}
 							options={listApiConfigMeta.map((config) => {
@@ -267,12 +259,7 @@ const ApiConfigManager = ({
 							data-testid="select-component"
 						/>
 						<StandardTooltip content={t("settings:providers.addProfile")}>
-							<Button
-								disabled={disabled}
-								variant="ghost"
-								size="icon"
-								onClick={handleAdd}
-								data-testid="add-profile-button">
+							<Button variant="ghost" size="icon" onClick={handleAdd} data-testid="add-profile-button">
 								<span className="codicon codicon-add" />
 							</Button>
 						</StandardTooltip>
@@ -282,7 +269,6 @@ const ApiConfigManager = ({
 									<Button
 										variant="ghost"
 										size="icon"
-										disabled={disabled}
 										onClick={handleStartRename}
 										data-testid="rename-profile-button">
 										<span className="codicon codicon-edit" />
@@ -299,7 +285,7 @@ const ApiConfigManager = ({
 										size="icon"
 										onClick={handleDelete}
 										data-testid="delete-profile-button"
-										disabled={disabled || isOnlyProfile}>
+										disabled={isOnlyProfile}>
 										<span className="codicon codicon-trash" />
 									</Button>
 								</StandardTooltip>
@@ -327,7 +313,6 @@ const ApiConfigManager = ({
 				<DialogContent className="p-4 max-w-sm bg-card">
 					<DialogTitle>{t("settings:providers.newProfile")}</DialogTitle>
 					<Input
-						disabled={disabled}
 						ref={newProfileInputRef}
 						value={newProfileName}
 						onInput={(e: unknown) => {
@@ -358,7 +343,7 @@ const ApiConfigManager = ({
 						</Button>
 						<Button
 							variant="primary"
-							disabled={disabled || !newProfileName.trim()}
+							disabled={!newProfileName.trim()}
 							onClick={handleNewProfileSave}
 							data-testid="create-profile-button">
 							{t("settings:providers.createProfile")}

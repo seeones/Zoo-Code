@@ -131,44 +131,6 @@ describe("ApiConfigManager", () => {
 	const getRenameForm = () => screen.getByTestId("rename-form")
 	const getDialogContent = () => screen.getByTestId("dialog-content")
 
-	it("disables profile actions while a save is pending", () => {
-		render(<ApiConfigManager {...defaultProps} disabled />)
-		for (const id of ["add-profile-button", "rename-profile-button", "delete-profile-button"]) {
-			expect(screen.getByTestId(id)).toBeDisabled()
-			fireEvent.click(screen.getByTestId(id))
-		}
-		fireEvent.change(screen.getByTestId("select-component"), { target: { value: "Another Config" } })
-		expect(mockOnSelectConfig).not.toHaveBeenCalled()
-		expect(mockOnDeleteConfig).not.toHaveBeenCalled()
-		expect(mockOnRenameConfig).not.toHaveBeenCalled()
-		expect(mockOnUpsertConfig).not.toHaveBeenCalled()
-	})
-
-	it.each(["rename", "create"])(
-		"retains a %s draft while disabled and submits after the pending save finishes",
-		(action) => {
-			const view = render(<ApiConfigManager {...defaultProps} />)
-			fireEvent.click(screen.getByTestId(action === "rename" ? "rename-profile-button" : "add-profile-button"))
-			const input =
-				action === "rename"
-					? screen.getByPlaceholderText("settings:providers.enterNewName")
-					: screen.getByTestId("new-profile-input")
-			fireEvent.input(input, { target: { value: "New Profile" } })
-			view.rerender(<ApiConfigManager {...defaultProps} disabled />)
-			const submit = screen.getByTestId(action === "rename" ? "save-rename-button" : "create-profile-button")
-			expect(submit).toBeDisabled()
-			fireEvent.keyDown(input, { key: "Enter" })
-			expect(mockOnRenameConfig).not.toHaveBeenCalled()
-			expect(mockOnUpsertConfig).not.toHaveBeenCalled()
-			expect(input).toHaveValue("New Profile")
-			view.rerender(<ApiConfigManager {...defaultProps} />)
-			fireEvent.click(submit)
-			expect(action === "rename" ? mockOnRenameConfig : mockOnUpsertConfig).toHaveBeenCalledTimes(1)
-			if (action === "rename") expect(mockOnRenameConfig).toHaveBeenCalledWith("Default Config", "New Profile")
-			else expect(mockOnUpsertConfig).toHaveBeenCalledWith("New Profile")
-		},
-	)
-
 	it("opens new profile dialog when clicking add button", () => {
 		render(<ApiConfigManager {...defaultProps} />)
 
